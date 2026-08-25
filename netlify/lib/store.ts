@@ -76,13 +76,16 @@ export async function createAggregate(
 }
 
 /**
- * Bumps rev, stamps updatedAt, and writes only if the blob still matches the
- * ETag the caller read. A losing write throws ConflictError rather than
- * silently overwriting a concurrent change.
+ * Bumps rev, stamps updatedAt, and persists.
+ *
+ * Uses the storage ETag for a true compare-and-swap when one is available, but
+ * does not require it: reads do not return an ETag in every environment, and
+ * conditioning on a missing value would fail every update. The authoritative
+ * conflict check is the rev comparison in mutateAggregate.
  */
 export async function saveAggregate(
   aggregate: AccountAggregate,
-  etag: string | undefined
+  storageEtag: string | undefined
 ): Promise<LoadedAggregate> {
   const next: AccountAggregate = {
     ...aggregate,
@@ -93,14 +96,36 @@ export async function saveAggregate(
   const write = await store().setJSON(
     accountKey(next.account.id),
     next,
-    // Without a prior ETag the blob should not yet exist; onlyIfNew keeps the
-    // write conditional either way so we never blind-overwrite.
-    etag ? { onlyIfMatch: etag } : { onlyIfNew: true }
+    storageEtag ? { onlyIfMatch: storageEtag } : {}
   );
   if (!write.modified) throw new ConflictError();
 
   await syncIndexEntry(indexEntryFor(next));
   return { aggregate: next, etag: write.etag };
+}
+
+/**
+ * Read, mutate, write. Every sub-entity endpoint goes through here so no
+ * handler can forget the conflict check. Returns null if the account does not
+ * exist; the mutator may throw to abort the write.
+ */
+export async function mutateAggregate<T>(
+  id: ID,
+  expectedRev: number | undefined,
+  mutator: (aggregate: AccountAggregate) => T
+): Promise<{ aggregate: AccountAggregate; etag?: string; result: T } | null> {
+  const loaded = await readAggregate(id);
+  if (!loaded) return null;
+
+  if (expectedRev !== undefined && loaded.aggregate.rev !== expectedRev) {
+    throw new ConflictError(
+      `This account has changed since you loaded it (now at revision ${loaded.aggregate.rev}, you had ${expectedRev}). Reload and retry.`
+    );
+  }
+
+  const result = mutator(loaded.aggregate);
+  const saved = await saveAggregate(loaded.aggregate, loaded.etag);
+  return { aggregate: saved.aggregate, etag: saved.etag, result };
 }
 
 export async function deleteAggregate(id: ID): Promise<void> {

@@ -13,17 +13,17 @@ import {
   createAggregate,
   deleteAggregate,
   listIndex,
+  mutateAggregate,
   newEvent,
   newId,
   appendEvent,
   readAggregate,
-  saveAggregate,
 } from '../lib/store';
 import {
   error,
-  ifMatch,
+  expectedRev,
   json,
-  jsonWithEtag,
+  jsonWithRev,
   readJson,
   requireString,
   toResponse,
@@ -79,51 +79,50 @@ async function createAccount(req: Request): Promise<Response> {
   );
 
   const saved = await createAggregate(aggregate);
-  return jsonWithEtag(saved.aggregate, saved.etag, 201);
+  return jsonWithRev(saved.aggregate, saved.aggregate.rev, 201);
 }
 
 async function getAccount(id: string): Promise<Response> {
   const loaded = await readAggregate(id);
   if (!loaded) return error(404, 'Account not found.');
-  return jsonWithEtag(loaded.aggregate, loaded.etag);
+  return jsonWithRev(loaded.aggregate, loaded.aggregate.rev);
 }
 
 async function updateAccount(req: Request, id: string): Promise<Response> {
-  const loaded = await readAggregate(id);
-  if (!loaded) return error(404, 'Account not found.');
-
   const body = await readJson<{ companyName?: unknown; domain?: unknown }>(req);
-  const aggregate = loaded.aggregate;
-  const changes: string[] = [];
 
-  if (body.companyName !== undefined) {
-    const companyName = requireString(body.companyName, 'companyName');
-    if (companyName !== aggregate.account.companyName) {
-      changes.push(`name "${aggregate.account.companyName}" -> "${companyName}"`);
-      aggregate.account.companyName = companyName;
+  const outcome = await mutateAggregate(id, expectedRev(req), (aggregate) => {
+    const changes: string[] = [];
+
+    if (body.companyName !== undefined) {
+      const companyName = requireString(body.companyName, 'companyName');
+      if (companyName !== aggregate.account.companyName) {
+        changes.push(`name "${aggregate.account.companyName}" -> "${companyName}"`);
+        aggregate.account.companyName = companyName;
+      }
     }
-  }
 
-  if (body.domain !== undefined) {
-    const domain =
-      typeof body.domain === 'string' && body.domain.trim() ? body.domain.trim() : undefined;
-    if (domain !== aggregate.account.domain) {
-      changes.push(`domain -> ${domain ?? 'none'}`);
-      aggregate.account.domain = domain;
+    if (body.domain !== undefined) {
+      const domain =
+        typeof body.domain === 'string' && body.domain.trim() ? body.domain.trim() : undefined;
+      if (domain !== aggregate.account.domain) {
+        changes.push(`domain -> ${domain ?? 'none'}`);
+        aggregate.account.domain = domain;
+      }
     }
-  }
 
-  if (changes.length > 0) {
-    appendEvent(
-      aggregate,
-      newEvent('account_updated', `Account details changed: ${changes.join(', ')}.`, {
-        entityRef: `account:${id}`,
-      })
-    );
-  }
+    if (changes.length > 0) {
+      appendEvent(
+        aggregate,
+        newEvent('account_updated', `Account details changed: ${changes.join(', ')}.`, {
+          entityRef: `account:${id}`,
+        })
+      );
+    }
+  });
 
-  const saved = await saveAggregate(aggregate, ifMatch(req) ?? loaded.etag);
-  return jsonWithEtag(saved.aggregate, saved.etag);
+  if (!outcome) return error(404, 'Account not found.');
+  return jsonWithRev(outcome.aggregate, outcome.aggregate.rev);
 }
 
 async function removeAccount(id: string): Promise<Response> {

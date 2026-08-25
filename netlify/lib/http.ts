@@ -18,8 +18,17 @@ export function json(data: unknown, init: ResponseInit = {}): Response {
   });
 }
 
-export function jsonWithEtag(data: unknown, etag: string | undefined, status = 200): Response {
-  return json(data, { status, headers: etag ? { ETag: etag } : {} });
+/**
+ * The API's version token is the aggregate's own rev, not the blob store's
+ * ETag: the store does not return an ETag on reads in every environment, and a
+ * concurrency scheme that silently stops working is worse than none.
+ */
+export function revEtag(rev: number): string {
+  return `"rev-${rev}"`;
+}
+
+export function jsonWithRev(data: unknown, rev: number, status = 200): Response {
+  return json(data, { status, headers: { ETag: revEtag(rev) } });
 }
 
 export function error(status: number, message: string): Response {
@@ -42,11 +51,18 @@ export function requireString(value: unknown, field: string): string {
 }
 
 /**
- * Writes carry the ETag from the preceding GET in If-Match. Missing it is
- * allowed for compatibility but forfeits lost-update protection.
+ * Reads the expected revision from If-Match. Absent means the caller accepts
+ * last-write-wins; present and stale is rejected with 409.
  */
-export function ifMatch(req: Request): string | undefined {
-  return req.headers.get('if-match') ?? undefined;
+export function expectedRev(req: Request): number | undefined {
+  const header = req.headers.get('if-match');
+  if (!header || header === '*') return undefined;
+
+  const match = /rev-(\d+)/.exec(header);
+  if (!match) {
+    throw new BadRequestError('If-Match must be an ETag of the form "rev-N".');
+  }
+  return Number(match[1]);
 }
 
 /** Maps domain errors onto status codes so each handler stays free of try/catch noise. */

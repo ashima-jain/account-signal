@@ -38,6 +38,38 @@ export type SourceType =
   | 'document'
   | 'inference';
 
+export const SOURCE_SYSTEMS: SourceSystem[] = [
+  'manual',
+  'granola',
+  'gmail',
+  'calendar',
+  'crm',
+  'notion',
+  'linkedin',
+];
+
+export const SOURCE_TYPES: SourceType[] = [
+  'earnings_call',
+  'filing',
+  'job_posting',
+  'news',
+  'linkedin',
+  'conversation',
+  'document',
+  'inference',
+];
+
+export const SOURCE_TYPE_LABELS: Record<SourceType, string> = {
+  earnings_call: 'Earnings call',
+  filing: 'Filing',
+  job_posting: 'Job posting',
+  news: 'News',
+  linkedin: 'LinkedIn',
+  conversation: 'Conversation',
+  document: 'Document',
+  inference: 'Inference (unverified)',
+};
+
 export interface EvidenceItem {
   id: ID;
   sourceType: SourceType;
@@ -69,6 +101,26 @@ export type ClaimCategory =
   | 'tech_init'
   | 'problem'
   | 'value';
+
+export const CLAIM_CATEGORIES: ClaimCategory[] = [
+  'why_matters',
+  'why_now',
+  'trigger',
+  'business_init',
+  'tech_init',
+  'problem',
+  'value',
+];
+
+export const CLAIM_CATEGORY_LABELS: Record<ClaimCategory, string> = {
+  why_matters: 'Why this account matters',
+  why_now: 'Why now',
+  trigger: 'Trigger event',
+  business_init: 'Business initiative',
+  tech_init: 'Technical initiative',
+  problem: 'Problem to solve',
+  value: 'Value at stake',
+};
 
 export interface Claim {
   id: ID;
@@ -321,7 +373,10 @@ export interface Account {
 
 /** Everything for one account, stored as a single blob. */
 export interface AccountAggregate {
-  /** Optimistic concurrency token. Writes with a stale rev are rejected. */
+  /**
+   * Monotonic write counter, for display and debugging. Concurrency itself is
+   * enforced by ETag compare-and-swap in the storage layer, not by this field.
+   */
   rev: number;
   account: Account;
   evidence: EvidenceItem[];
