@@ -3,11 +3,9 @@
   publish = "dist"
   functions = "netlify/functions"
 
-[[redirects]]
-  from = "/api/*"
-  to = "/.netlify/functions/:splat"
-  status = 200
-
+# Functions declare their own /api/* routes via `export const config = { path }`,
+# so no /api/* rewrite is needed. Function routes are matched before this
+# SPA fallback.
 [[redirects]]
   from = "/*"
   to = "/index.html"

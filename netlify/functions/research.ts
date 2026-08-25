@@ -128,7 +128,12 @@ ${body.researchNotes || 'None provided'}`;
       email: parsed.email,
       coldCallOpener: parsed.coldCallOpener,
       discoveryQuestions: parsed.discoveryQuestions,
-      confidenceEvidence: parsed.confidenceEvidence,
+      // Structured Outputs requires .nullable() rather than .optional(), so the
+      // model returns null where the domain type expects undefined.
+      confidenceEvidence: parsed.confidenceEvidence.map((item) => ({
+        ...item,
+        source: item.source ?? undefined,
+      })),
     };
 
     return new Response(JSON.stringify(output), {

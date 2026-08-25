@@ -1,87 +1,134 @@
-import type { Context } from '@netlify/functions';
-import { getStore } from '@netlify/blobs';
-import type { Account } from '../../src/types';
+/**
+ * Account CRUD.
+ *
+ * Routes are declared with `config.path` rather than parsed out of the URL. The
+ * v1 code matched the rewritten `/.netlify/functions/...` path, which only
+ * exists under `netlify dev`; in production the function sees the original
+ * `/api/...` URL, so every id-based route silently fell through to 405.
+ * `context.params` removes the guesswork.
+ */
 
-const store = getStore({ name: 'accounts' });
+import type { Config, Context } from '@netlify/functions';
+import {
+  createAggregate,
+  deleteAggregate,
+  listIndex,
+  newEvent,
+  newId,
+  appendEvent,
+  readAggregate,
+  saveAggregate,
+} from '../lib/store';
+import {
+  error,
+  ifMatch,
+  json,
+  jsonWithEtag,
+  readJson,
+  requireString,
+  toResponse,
+} from '../lib/http';
+import { emptyAggregate, type Account } from '../../src/domain/types';
 
-function getIdFromPath(pathname: string): string | null {
-  const match = pathname.match(/^\/\.netlify\/functions\/accounts\/(.*)$/);
-  return match?.[1] ?? null;
-}
+export const config: Config = {
+  path: ['/api/accounts', '/api/accounts/:id'],
+};
 
-function generateId(): string {
-  return `${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
-}
-
-export default async (req: Request, _context: Context) => {
-  const pathname = new URL(req.url).pathname;
-  const id = getIdFromPath(pathname);
-
-  const headers = { 'Content-Type': 'application/json' };
+export default async (req: Request, context: Context): Promise<Response> => {
+  const id = context.params.id;
 
   try {
-    if (req.method === 'GET' && !id) {
-      // List all accounts
-      const { blobs } = await store.list();
-      const accounts: Account[] = [];
-      for (const key of blobs.map(b => b.key)) {
-        const data = await store.get(key, { type: 'json' });
-        if (data) accounts.push(data as Account);
-      }
-      accounts.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-      return new Response(JSON.stringify(accounts), { status: 200, headers });
+    if (!id) {
+      if (req.method === 'GET') return await listAccounts();
+      if (req.method === 'POST') return await createAccount(req);
+      return error(405, `${req.method} is not supported on /api/accounts.`);
     }
 
-    if (req.method === 'GET' && id) {
-      const data = await store.get(id, { type: 'json' });
-      if (!data) {
-        return new Response(JSON.stringify({ error: 'Account not found' }), { status: 404, headers });
-      }
-      return new Response(JSON.stringify(data), { status: 200, headers });
-    }
-
-    if (req.method === 'POST' && !id) {
-      const body = await req.json();
-      const now = new Date().toISOString();
-      const account: Account = {
-        id: generateId(),
-        companyName: body.companyName || '',
-        targetName: body.targetName || '',
-        targetTitle: body.targetTitle || '',
-        researchNotes: body.researchNotes || '',
-        people: body.people || [],
-        research: body.research || undefined,
-        createdAt: now,
-        updatedAt: now,
-      };
-      await store.setJSON(account.id, account);
-      return new Response(JSON.stringify(account), { status: 201, headers });
-    }
-
-    if (req.method === 'PUT' && id) {
-      const existing = await store.get(id, { type: 'json' });
-      if (!existing) {
-        return new Response(JSON.stringify({ error: 'Account not found' }), { status: 404, headers });
-      }
-      const body = await req.json();
-      const account: Account = {
-        ...(existing as Account),
-        ...body,
-        id, // prevent id change
-        updatedAt: new Date().toISOString(),
-      };
-      await store.setJSON(id, account);
-      return new Response(JSON.stringify(account), { status: 200, headers });
-    }
-
-    if (req.method === 'DELETE' && id) {
-      await store.delete(id);
-      return new Response(JSON.stringify({ success: true }), { status: 200, headers });
-    }
-
-    return new Response(JSON.stringify({ error: 'Method not allowed' }), { status: 405, headers });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    return new Response(JSON.stringify({ error: message }), { status: 500, headers });
+    if (req.method === 'GET') return await getAccount(id);
+    if (req.method === 'PATCH' || req.method === 'PUT') return await updateAccount(req, id);
+    if (req.method === 'DELETE') return await removeAccount(id);
+    return error(405, `${req.method} is not supported on /api/accounts/:id.`);
+  } catch (err) {
+    return toResponse(err);
   }
 };
+
+async function listAccounts(): Promise<Response> {
+  return json(await listIndex());
+}
+
+async function createAccount(req: Request): Promise<Response> {
+  const body = await readJson<{ companyName?: unknown; domain?: unknown }>(req);
+  const companyName = requireString(body.companyName, 'companyName');
+  const now = new Date().toISOString();
+
+  const account: Account = {
+    id: newId(),
+    companyName,
+    domain: typeof body.domain === 'string' ? body.domain.trim() || undefined : undefined,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  const aggregate = emptyAggregate(account);
+  appendEvent(
+    aggregate,
+    newEvent('account_created', `Account created for ${companyName}.`, {
+      entityRef: `account:${account.id}`,
+    })
+  );
+
+  const saved = await createAggregate(aggregate);
+  return jsonWithEtag(saved.aggregate, saved.etag, 201);
+}
+
+async function getAccount(id: string): Promise<Response> {
+  const loaded = await readAggregate(id);
+  if (!loaded) return error(404, 'Account not found.');
+  return jsonWithEtag(loaded.aggregate, loaded.etag);
+}
+
+async function updateAccount(req: Request, id: string): Promise<Response> {
+  const loaded = await readAggregate(id);
+  if (!loaded) return error(404, 'Account not found.');
+
+  const body = await readJson<{ companyName?: unknown; domain?: unknown }>(req);
+  const aggregate = loaded.aggregate;
+  const changes: string[] = [];
+
+  if (body.companyName !== undefined) {
+    const companyName = requireString(body.companyName, 'companyName');
+    if (companyName !== aggregate.account.companyName) {
+      changes.push(`name "${aggregate.account.companyName}" -> "${companyName}"`);
+      aggregate.account.companyName = companyName;
+    }
+  }
+
+  if (body.domain !== undefined) {
+    const domain =
+      typeof body.domain === 'string' && body.domain.trim() ? body.domain.trim() : undefined;
+    if (domain !== aggregate.account.domain) {
+      changes.push(`domain -> ${domain ?? 'none'}`);
+      aggregate.account.domain = domain;
+    }
+  }
+
+  if (changes.length > 0) {
+    appendEvent(
+      aggregate,
+      newEvent('account_updated', `Account details changed: ${changes.join(', ')}.`, {
+        entityRef: `account:${id}`,
+      })
+    );
+  }
+
+  const saved = await saveAggregate(aggregate, ifMatch(req) ?? loaded.etag);
+  return jsonWithEtag(saved.aggregate, saved.etag);
+}
+
+async function removeAccount(id: string): Promise<Response> {
+  const loaded = await readAggregate(id);
+  if (!loaded) return error(404, 'Account not found.');
+  await deleteAggregate(id);
+  return json({ success: true });
+}
