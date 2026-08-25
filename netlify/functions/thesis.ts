@@ -211,7 +211,7 @@ Analyse this evidence and produce a thesis. For each claim:
 If the evidence is insufficient to say anything meaningful, set insufficientEvidence to true and explain why.`;
 
   const response = await anthropic.messages.create({
-    model: 'claude-sonnet-4-5-20250514',
+    model: 'claude-haiku-4-5-20251001',
     max_tokens: 2000,
     system,
     messages: [{ role: 'user', content: user }],
