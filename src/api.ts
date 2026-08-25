@@ -1,55 +1,178 @@
-import type { Account, ResearchOutput, ResearchRequest } from './types';
+/**
+ * Typed API client.
+ *
+ * Every mutation returns the whole aggregate, so callers replace one piece of
+ * state rather than reconciling sub-entities. The account's `rev` is sent as
+ * If-Match on writes, which is what makes a stale tab fail loudly with 409
+ * instead of quietly overwriting someone else's edit.
+ */
 
-const API_BASE = '/api';
+import type {
+  AccountAggregate,
+  AccountIndexEntry,
+  Claim,
+  ClaimCategory,
+  ClaimStatus,
+  EvidenceItem,
+  ID,
+  SourceSystem,
+  SourceType,
+} from './domain/types';
 
-export async function generateResearch(request: ResearchRequest): Promise<ResearchOutput> {
-  const res = await fetch(`${API_BASE}/research`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(request),
-  });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: 'Unknown error' }));
-    throw new Error(err.error || `Research failed: ${res.status}`);
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
   }
-  return res.json();
 }
 
-export async function listAccounts(): Promise<Account[]> {
-  const res = await fetch(`${API_BASE}/accounts`);
-  if (!res.ok) throw new Error('Failed to load accounts');
-  return res.json();
+/** The account changed underneath this tab. Callers should reload, not retry. */
+export class StaleDataError extends ApiError {
+  constructor(message: string) {
+    super(409, message);
+    this.name = 'StaleDataError';
+  }
 }
 
-export async function getAccount(id: string): Promise<Account> {
-  const res = await fetch(`${API_BASE}/accounts/${id}`);
-  if (!res.ok) throw new Error('Failed to load account');
-  return res.json();
+export interface MutationResponse {
+  aggregate: AccountAggregate;
+  entityId?: ID;
 }
 
-export async function createAccount(account: Omit<Account, 'id' | 'createdAt' | 'updatedAt'>): Promise<Account> {
-  const res = await fetch(`${API_BASE}/accounts`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(account),
-  });
-  if (!res.ok) throw new Error('Failed to save account');
-  return res.json();
+async function request<T>(path: string, init: RequestInit = {}, rev?: number): Promise<T> {
+  const headers = new Headers(init.headers);
+  if (init.body !== undefined) headers.set('Content-Type', 'application/json');
+  if (rev !== undefined) headers.set('If-Match', `"rev-${rev}"`);
+
+  const response = await fetch(path, { ...init, headers });
+
+  if (!response.ok) {
+    let message = `Request failed with status ${response.status}.`;
+    try {
+      const body = await response.json();
+      if (body && typeof body.error === 'string') message = body.error;
+    } catch {
+      // Non-JSON error body; keep the generic message.
+    }
+    if (response.status === 409) throw new StaleDataError(message);
+    throw new ApiError(response.status, message);
+  }
+
+  if (response.status === 204) return undefined as T;
+  return (await response.json()) as T;
 }
 
-export async function updateAccount(id: string, account: Partial<Account>): Promise<Account> {
-  const res = await fetch(`${API_BASE}/accounts/${id}`, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(account),
-  });
-  if (!res.ok) throw new Error('Failed to update account');
-  return res.json();
+// ─── Accounts ────────────────────────────────────────────────────────────────
+
+export interface AccountInput {
+  companyName: string;
+  domain?: string;
 }
 
-export async function deleteAccount(id: string): Promise<void> {
-  const res = await fetch(`${API_BASE}/accounts/${id}`, {
-    method: 'DELETE',
-  });
-  if (!res.ok) throw new Error('Failed to delete account');
+export const api = {
+  listAccounts: () => request<AccountIndexEntry[]>('/api/accounts'),
+
+  getAccount: (id: ID) => request<AccountAggregate>(`/api/accounts/${id}`),
+
+  createAccount: (input: AccountInput) =>
+    request<MutationResponse>('/api/accounts', {
+      method: 'POST',
+      body: JSON.stringify(input),
+    }),
+
+  updateAccount: (id: ID, rev: number, input: Partial<AccountInput>) =>
+    request<MutationResponse>(
+      `/api/accounts/${id}`,
+      { method: 'PATCH', body: JSON.stringify(input) },
+      rev
+    ),
+
+  deleteAccount: (id: ID) =>
+    request<{ success: boolean }>(`/api/accounts/${id}`, { method: 'DELETE' }),
+
+  // ─── Evidence ──────────────────────────────────────────────────────────────
+
+  addEvidence: (accountId: ID, rev: number, input: EvidenceInput) =>
+    request<MutationResponse>(
+      `/api/accounts/${accountId}/evidence`,
+      { method: 'POST', body: JSON.stringify(input) },
+      rev
+    ),
+
+  updateEvidence: (
+    accountId: ID,
+    evidenceId: ID,
+    rev: number,
+    input: Partial<EvidenceInput>
+  ) =>
+    request<MutationResponse>(
+      `/api/accounts/${accountId}/evidence/${evidenceId}`,
+      { method: 'PATCH', body: JSON.stringify(input) },
+      rev
+    ),
+
+  deleteEvidence: (accountId: ID, evidenceId: ID, rev: number) =>
+    request<MutationResponse>(
+      `/api/accounts/${accountId}/evidence/${evidenceId}`,
+      { method: 'DELETE' },
+      rev
+    ),
+
+  // ─── Claims ────────────────────────────────────────────────────────────────
+
+  addClaim: (accountId: ID, rev: number, input: ClaimInput) =>
+    request<MutationResponse>(
+      `/api/accounts/${accountId}/claims`,
+      { method: 'POST', body: JSON.stringify(input) },
+      rev
+    ),
+
+  updateClaim: (accountId: ID, claimId: ID, rev: number, input: ClaimUpdate) =>
+    request<MutationResponse>(
+      `/api/accounts/${accountId}/claims/${claimId}`,
+      { method: 'PATCH', body: JSON.stringify(input) },
+      rev
+    ),
+
+  deleteClaim: (accountId: ID, claimId: ID, rev: number) =>
+    request<MutationResponse>(
+      `/api/accounts/${accountId}/claims/${claimId}`,
+      { method: 'DELETE' },
+      rev
+    ),
+};
+
+export interface EvidenceInput {
+  sourceType: SourceType;
+  sourceSystem?: SourceSystem;
+  sourceRef?: string;
+  externalUrl?: string;
+  externalId?: string;
+  verbatim: string;
+  asOf?: string;
+  confidential?: boolean;
+  stakeholderId?: ID;
 }
+
+export interface ClaimInput {
+  text: string;
+  status: ClaimStatus;
+  category: ClaimCategory;
+  evidenceIds?: ID[];
+  supersedesClaimId?: ID;
+  reason?: string;
+}
+
+export interface ClaimUpdate {
+  text?: string;
+  status?: ClaimStatus;
+  category?: ClaimCategory;
+  evidenceIds?: ID[];
+  revalidate?: boolean;
+  reason?: string;
+}
+
+export type { Claim, EvidenceItem };

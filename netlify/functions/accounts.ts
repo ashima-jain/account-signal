@@ -24,6 +24,7 @@ import {
   expectedRev,
   json,
   jsonWithRev,
+  mutationResult,
   readJson,
   requireString,
   toResponse,
@@ -79,7 +80,7 @@ async function createAccount(req: Request): Promise<Response> {
   );
 
   const saved = await createAggregate(aggregate);
-  return jsonWithRev(saved.aggregate, saved.aggregate.rev, 201);
+  return mutationResult(saved.aggregate, saved.aggregate.account.id, 201);
 }
 
 async function getAccount(id: string): Promise<Response> {
@@ -122,7 +123,7 @@ async function updateAccount(req: Request, id: string): Promise<Response> {
   });
 
   if (!outcome) return error(404, 'Account not found.');
-  return jsonWithRev(outcome.aggregate, outcome.aggregate.rev);
+  return mutationResult(outcome.aggregate, id);
 }
 
 async function removeAccount(id: string): Promise<Response> {

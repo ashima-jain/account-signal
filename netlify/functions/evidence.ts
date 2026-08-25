@@ -19,8 +19,8 @@ import {
   BadRequestError,
   error,
   expectedRev,
-  json,
   jsonWithRev,
+  mutationResult,
   readJson,
   requireString,
   toResponse,
@@ -156,7 +156,11 @@ async function addEvidence(req: Request, accountId: string): Promise<Response> {
   });
 
   if (!outcome) return error(404, 'Account not found.');
-  return jsonWithRev(outcome.result.item, outcome.aggregate.rev, outcome.result.created ? 201 : 200);
+  return mutationResult(
+    outcome.aggregate,
+    outcome.result.item.id,
+    outcome.result.created ? 201 : 200
+  );
 }
 
 async function updateEvidence(
@@ -197,7 +201,7 @@ async function updateEvidence(
 
   if (!outcome) return error(404, 'Account not found.');
   if (!outcome.result) return error(404, 'Evidence not found.');
-  return jsonWithRev(outcome.result.item, outcome.aggregate.rev);
+  return mutationResult(outcome.aggregate, outcome.result.item.id);
 }
 
 async function removeEvidence(
@@ -252,5 +256,5 @@ async function removeEvidence(
 
   if (!outcome) return error(404, 'Account not found.');
   if (!outcome.result) return error(404, 'Evidence not found.');
-  return json({ success: true, claimsDemoted: outcome.result.demoted });
+  return mutationResult(outcome.aggregate, evidenceId);
 }

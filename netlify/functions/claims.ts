@@ -12,8 +12,8 @@ import {
   BadRequestError,
   error,
   expectedRev,
-  json,
   jsonWithRev,
+  mutationResult,
   readJson,
   requireString,
   toResponse,
@@ -127,7 +127,7 @@ async function addClaim(req: Request, accountId: string): Promise<Response> {
   });
 
   if (!outcome) return error(404, 'Account not found.');
-  return jsonWithRev(outcome.result, outcome.aggregate.rev, 201);
+  return mutationResult(outcome.aggregate, outcome.result.id, 201);
 }
 
 async function updateClaim(
@@ -173,7 +173,7 @@ async function updateClaim(
 
   if (!outcome) return error(404, 'Account not found.');
   if (!outcome.result) return error(404, 'Claim not found.');
-  return jsonWithRev(outcome.result, outcome.aggregate.rev);
+  return mutationResult(outcome.aggregate, outcome.result.id);
 }
 
 async function removeClaim(
@@ -203,5 +203,5 @@ async function removeClaim(
 
   if (!outcome) return error(404, 'Account not found.');
   if (!outcome.result) return error(404, 'Claim not found.');
-  return json({ success: true });
+  return mutationResult(outcome.aggregate, claimId);
 }
