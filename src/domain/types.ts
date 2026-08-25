@@ -330,6 +330,38 @@ export type Channel =
 
 export type ActionStatus = 'open' | 'done' | 'dropped';
 
+export const HORIZONS: Horizon[] = ['this_week', 'next_2_weeks', 'next_30_days'];
+
+export const HORIZON_LABELS: Record<Horizon, string> = {
+  this_week: 'This week',
+  next_2_weeks: 'Next 2 weeks',
+  next_30_days: 'Next 30 days',
+};
+
+export const CHANNELS: Channel[] = [
+  'email',
+  'linkedin',
+  'call',
+  'warm_intro',
+  'partner_si',
+  'exec_outreach',
+  'technical_session',
+  'event',
+  'other',
+];
+
+export const CHANNEL_LABELS: Record<Channel, string> = {
+  email: 'Email',
+  linkedin: 'LinkedIn',
+  call: 'Call',
+  warm_intro: 'Warm intro',
+  partner_si: 'Partner / SI',
+  exec_outreach: 'Exec outreach',
+  technical_session: 'Technical session',
+  event: 'Event',
+  other: 'Other',
+};
+
 /**
  * One entity serves both the 30-day plan (bucketed by horizon) and Next Best
  * Action (top-ranked slice), so the two views can never disagree.

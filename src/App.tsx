@@ -4,8 +4,8 @@ import AccountLayout from './screens/AccountLayout';
 import EvidenceLedger from './screens/EvidenceLedger';
 import Thesis from './screens/Thesis';
 import Stakeholders from './screens/Stakeholders';
+import Actions from './screens/Actions';
 import ChangeLog from './screens/ChangeLog';
-import ComingSoon from './screens/ComingSoon';
 
 export default function App() {
   return (
@@ -24,15 +24,7 @@ export default function App() {
             <Route index element={<Thesis />} />
             <Route path="evidence" element={<EvidenceLedger />} />
             <Route path="stakeholders" element={<Stakeholders />} />
-            <Route
-              path="actions"
-              element={
-                <ComingSoon
-                  title="Actions"
-                  detail="A single action list that feeds both the 30-day plan and Next Best Action, ranked by which unknowns each action resolves."
-                />
-              }
-            />
+            <Route path="actions" element={<Actions />} />
             <Route path="changelog" element={<ChangeLog />} />
           </Route>
           <Route path="*" element={<p className="empty">That page does not exist.</p>} />

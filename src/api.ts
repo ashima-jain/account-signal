@@ -11,11 +11,13 @@ import type {
   AccountAggregate,
   AccountIndexEntry,
   BuyerRole,
+  Channel,
   ChampionSignalType,
   Claim,
   ClaimCategory,
   ClaimStatus,
   EvidenceItem,
+  Horizon,
   ID,
   Posture,
   SourceSystem,
@@ -202,6 +204,29 @@ export const api = {
       { method: 'DELETE' },
       rev
     ),
+
+  // ─── Actions ────────────────────────────────────────────────────────────────
+
+  addAction: (accountId: ID, rev: number, input: ActionInput) =>
+    request<MutationResponse>(
+      `/api/accounts/${accountId}/actions`,
+      { method: 'POST', body: JSON.stringify(input) },
+      rev
+    ),
+
+  updateAction: (accountId: ID, actionId: ID, rev: number, input: Partial<ActionInput>) =>
+    request<MutationResponse>(
+      `/api/accounts/${accountId}/actions/${actionId}`,
+      { method: 'PATCH', body: JSON.stringify(input) },
+      rev
+    ),
+
+  deleteAction: (accountId: ID, actionId: ID, rev: number) =>
+    request<MutationResponse>(
+      `/api/accounts/${accountId}/actions/${actionId}`,
+      { method: 'DELETE' },
+      rev
+    ),
 };
 
 export interface EvidenceInput {
@@ -257,6 +282,24 @@ export interface SignalInput {
   observed?: boolean;
   evidenceId?: ID;
   note?: string;
+}
+
+export interface ActionInput {
+  stakeholderId?: ID;
+  wedgeId?: ID;
+  objective: string;
+  channel?: Channel;
+  messageOrAction: string;
+  whyThisPersonNow: string;
+  desiredOutcome: string;
+  dependencyActionId?: ID;
+  ifSuccess?: string;
+  ifFail?: string;
+  horizon: Horizon;
+  dueAt?: string;
+  resolvesClaimIds?: ID[];
+  status?: string;
+  outcomeNote?: string;
 }
 
 export type { Claim, EvidenceItem };

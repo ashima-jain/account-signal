@@ -687,3 +687,71 @@ blockquote {
   font-size: 0.82rem;
   padding: 0.3rem 0.4rem;
 }
+
+/* ─── Actions / NBA ────────────────────────────────────────────────────────── */
+
+.nba-card {
+  border-left: 3px solid var(--accent);
+}
+
+.nba-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.nba-objective {
+  font-size: 1.1rem;
+  font-weight: 550;
+  margin: 0 0 0.4rem;
+}
+
+.nba-actions {
+  margin-top: 0.6rem;
+}
+
+.horizon-group {
+  margin-top: 0.75rem;
+}
+
+.action-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.action-list > li {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.6rem 0.75rem;
+}
+
+.action-list > li.action-overdue {
+  border-left: 3px solid var(--warn);
+}
+
+.action-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.action-message {
+  margin: 0.3rem 0;
+  font-size: 0.9rem;
+  padding-left: 0.5rem;
+  border-left: 2px solid var(--border);
+}
+
+.action-buttons {
+  display: flex;
+  gap: 0.85rem;
+  margin-top: 0.4rem;
+  flex-wrap: wrap;
+}
