@@ -3,6 +3,7 @@ import CommandCenter from './screens/CommandCenter';
 import AccountLayout from './screens/AccountLayout';
 import EvidenceLedger from './screens/EvidenceLedger';
 import Thesis from './screens/Thesis';
+import Stakeholders from './screens/Stakeholders';
 import ChangeLog from './screens/ChangeLog';
 import ComingSoon from './screens/ComingSoon';
 
@@ -22,15 +23,7 @@ export default function App() {
           <Route path="/accounts/:accountId" element={<AccountLayout />}>
             <Route index element={<Thesis />} />
             <Route path="evidence" element={<EvidenceLedger />} />
-            <Route
-              path="stakeholders"
-              element={
-                <ComingSoon
-                  title="Stakeholders and the Champion Test"
-                  detail="Buyer-role map, posture versus computed champion tier, and the eight-signal champion test with required evidence."
-                />
-              }
-            />
+            <Route path="stakeholders" element={<Stakeholders />} />
             <Route
               path="actions"
               element={

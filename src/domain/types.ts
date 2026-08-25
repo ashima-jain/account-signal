@@ -209,7 +209,33 @@ export type Posture =
   | 'coach'
   | 'champion';
 
+export const POSTURES: Posture[] = [
+  'unknown',
+  'detractor',
+  'neutral',
+  'supporter',
+  'coach',
+  'champion',
+];
+
+export const POSTURE_LABELS: Record<Posture, string> = {
+  unknown: 'Unknown',
+  detractor: 'Detractor',
+  neutral: 'Neutral',
+  supporter: 'Supporter',
+  coach: 'Coach',
+  champion: 'Champion',
+};
+
 export type Rating = 1 | 2 | 3 | 4 | 5;
+
+export const RATING_LABELS: Record<Rating, string> = {
+  1: 'Low',
+  2: 'Below average',
+  3: 'Average',
+  4: 'Above average',
+  5: 'High',
+};
 
 export interface Stakeholder {
   id: ID;

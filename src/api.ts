@@ -10,11 +10,14 @@
 import type {
   AccountAggregate,
   AccountIndexEntry,
+  BuyerRole,
+  ChampionSignalType,
   Claim,
   ClaimCategory,
   ClaimStatus,
   EvidenceItem,
   ID,
+  Posture,
   SourceSystem,
   SourceType,
 } from './domain/types';
@@ -143,6 +146,62 @@ export const api = {
       { method: 'DELETE' },
       rev
     ),
+
+  // ─── Stakeholders ──────────────────────────────────────────────────────────
+
+  addStakeholder: (accountId: ID, rev: number, input: StakeholderInput) =>
+    request<MutationResponse>(
+      `/api/accounts/${accountId}/stakeholders`,
+      { method: 'POST', body: JSON.stringify(input) },
+      rev
+    ),
+
+  updateStakeholder: (
+    accountId: ID,
+    stakeholderId: ID,
+    rev: number,
+    input: Partial<StakeholderInput>
+  ) =>
+    request<MutationResponse>(
+      `/api/accounts/${accountId}/stakeholders/${stakeholderId}`,
+      { method: 'PATCH', body: JSON.stringify(input) },
+      rev
+    ),
+
+  deleteStakeholder: (accountId: ID, stakeholderId: ID, rev: number) =>
+    request<MutationResponse>(
+      `/api/accounts/${accountId}/stakeholders/${stakeholderId}`,
+      { method: 'DELETE' },
+      rev
+    ),
+
+  // ─── Champion signals ──────────────────────────────────────────────────────
+
+  recordSignal: (accountId: ID, rev: number, input: SignalInput) =>
+    request<MutationResponse>(
+      `/api/accounts/${accountId}/signals`,
+      { method: 'POST', body: JSON.stringify(input) },
+      rev
+    ),
+
+  updateSignal: (
+    accountId: ID,
+    signalId: ID,
+    rev: number,
+    input: Partial<SignalInput>
+  ) =>
+    request<MutationResponse>(
+      `/api/accounts/${accountId}/signals/${signalId}`,
+      { method: 'PATCH', body: JSON.stringify(input) },
+      rev
+    ),
+
+  deleteSignal: (accountId: ID, signalId: ID, rev: number) =>
+    request<MutationResponse>(
+      `/api/accounts/${accountId}/signals/${signalId}`,
+      { method: 'DELETE' },
+      rev
+    ),
 };
 
 export interface EvidenceInput {
@@ -173,6 +232,31 @@ export interface ClaimUpdate {
   evidenceIds?: ID[];
   revalidate?: boolean;
   reason?: string;
+}
+
+export interface StakeholderInput {
+  name: string;
+  role: string;
+  businessUnit?: string;
+  emails?: string[];
+  linkedinUrl?: string;
+  mapRoles?: BuyerRole[];
+  priorities?: string[];
+  relevance?: string;
+  influence?: number;
+  relationshipStrength?: number;
+  posture?: Posture;
+  accessPath?: string;
+  whatToLearn?: string[];
+  introducedByStakeholderId?: ID;
+}
+
+export interface SignalInput {
+  stakeholderId: ID;
+  signalType: ChampionSignalType;
+  observed?: boolean;
+  evidenceId?: ID;
+  note?: string;
 }
 
 export type { Claim, EvidenceItem };
