@@ -211,7 +211,7 @@ Analyse this evidence and produce a thesis. For each claim:
 If the evidence is insufficient to say anything meaningful, set insufficientEvidence to true and explain why.`;
 
   const response = await openai.chat.completions.parse({
-    model: 'gpt-4o-mini',
+    model: 'gpt-4o',
     temperature: 0.3,
     max_tokens: 2000,
     messages: [
