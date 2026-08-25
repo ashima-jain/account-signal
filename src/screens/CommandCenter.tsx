@@ -11,6 +11,7 @@ export default function CommandCenter() {
   const [error, setError] = useState<string | null>(null);
   const [companyName, setCompanyName] = useState('');
   const [busy, setBusy] = useState(false);
+  const [seeding, setSeeding] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -32,9 +33,24 @@ export default function CommandCenter() {
     setBusy(true);
     setError(null);
     try {
-      await api.createAccount({ companyName: name });
+      const result = await api.createAccount({ companyName: name });
       setCompanyName('');
       await load();
+
+      // Auto-seed: research the company and populate evidence, stakeholders, wedges.
+      setSeeding(name);
+      try {
+        await api.seedAccount(result.aggregate.account.id, result.aggregate.rev);
+        await load();
+      } catch (seedErr) {
+        // Seeding failed — the account is still created, just not populated.
+        // Show the error but don't block the user.
+        setError(
+          `Account created for ${name}, but auto-research failed: ${seedErr instanceof Error ? seedErr.message : 'unknown error'}. You can add evidence manually.`
+        );
+      } finally {
+        setSeeding(null);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not create the account.');
     } finally {
@@ -53,13 +69,19 @@ export default function CommandCenter() {
             placeholder="Company name"
             aria-label="Company name"
           />
-          <button type="submit" disabled={busy || !companyName.trim()}>
+          <button type="submit" disabled={busy || !!seeding || !companyName.trim()}>
             {busy ? 'Adding…' : 'Add account'}
           </button>
         </form>
       </div>
 
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
+
+      {seeding && (
+        <div className="seeding-banner">
+          <Spinner label={`Researching ${seeding}… finding evidence, stakeholders, and wedges`} />
+        </div>
+      )}
 
       {accounts === null ? (
         <Spinner label="Loading accounts" />

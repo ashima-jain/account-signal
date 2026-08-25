@@ -260,6 +260,15 @@ export const api = {
       { method: 'DELETE' },
       rev
     ),
+
+  // ─── Account seeding ─────────────────────────────────────────────────────────
+
+  seedAccount: (accountId: ID, rev: number) =>
+    request<MutationResponse & { skipped?: boolean; reason?: string }>(
+      `/api/accounts/${accountId}/seed`,
+      { method: 'POST' },
+      rev
+    ),
 };
 
 export interface EvidenceInput {
