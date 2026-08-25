@@ -227,6 +227,15 @@ export const api = {
       { method: 'DELETE' },
       rev
     ),
+
+  // ─── Thesis generator ───────────────────────────────────────────────────────
+
+  generateThesis: (accountId: ID, rev: number) =>
+    request<MutationResponse & { insufficientEvidence?: boolean; reason?: string }>(
+      `/api/accounts/${accountId}/thesis/generate`,
+      { method: 'POST' },
+      rev
+    ),
 };
 
 export interface EvidenceInput {

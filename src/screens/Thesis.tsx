@@ -28,6 +28,8 @@ export default function Thesis() {
   const [category, setCategory] = useState<ClaimCategory>('why_now');
   const [selected, setSelected] = useState<ID[]>([]);
   const [busy, setBusy] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [genResult, setGenResult] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<ID | null>(null);
 
   const counts = useMemo(
@@ -118,6 +120,34 @@ export default function Thesis() {
     }
   }
 
+  async function generate() {
+    if (aggregate.evidence.length === 0) {
+      setError('Record evidence first — a thesis without evidence is a guess.');
+      return;
+    }
+    const confirmed = window.confirm(
+      'This will replace all existing claims with AI-generated ones. The model can propose claims, but the server enforces the FACT invariant — nothing becomes a FACT without a real citation. Continue?'
+    );
+    if (!confirmed) return;
+
+    setGenerating(true);
+    setGenResult(null);
+    setError(null);
+    try {
+      const response = await api.generateThesis(aggregate.account.id, aggregate.rev);
+      if (response.insufficientEvidence) {
+        setGenResult(response.reason ?? 'The evidence is insufficient to support a thesis.');
+      } else if (response.aggregate) {
+        apply(response);
+        setGenResult(`Thesis generated: ${response.aggregate.claims.length} claims.`);
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not generate the thesis.');
+    } finally {
+      setGenerating(false);
+    }
+  }
+
   return (
     <div className="panel-stack">
       <div className="card">
@@ -127,8 +157,20 @@ export default function Thesis() {
             <Chip label={`${counts.FACT} facts`} tone="good" />
             <Chip label={`${counts.HYPOTHESIS} hypotheses`} />
             <Chip label={`${counts.UNKNOWN} unknowns`} tone="warn" />
+            <button
+              type="button"
+              className="link-button"
+              disabled={generating || aggregate.evidence.length === 0}
+              onClick={generate}
+            >
+              {generating ? 'Generating…' : 'Generate thesis'}
+            </button>
           </div>
         </div>
+
+        {genResult && (
+          <p className="hint" style={{ marginBottom: '0.75rem' }}>{genResult}</p>
+        )}
 
         {aggregate.claims.length === 0 ? (
           <EmptyState title="No claims yet.">
