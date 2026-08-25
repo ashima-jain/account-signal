@@ -23,7 +23,7 @@ export function Chip({
   tone = 'neutral',
 }: {
   label: string;
-  tone?: 'neutral' | 'warn' | 'good';
+  tone?: 'neutral' | 'warn' | 'good' | 'info' | 'bad';
 }) {
   return <span className={`chip chip-${tone}`}>{label}</span>;
 }

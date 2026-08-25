@@ -139,6 +139,20 @@ export interface Claim {
 
 export type WedgeStatus = 'candidate' | 'testing' | 'validated' | 'disqualified';
 
+export const WEDGE_STATUSES: WedgeStatus[] = [
+  'candidate',
+  'testing',
+  'validated',
+  'disqualified',
+];
+
+export const WEDGE_STATUS_LABELS: Record<WedgeStatus, string> = {
+  candidate: 'Candidate',
+  testing: 'Testing',
+  validated: 'Validated',
+  disqualified: 'Disqualified',
+};
+
 export interface ProofPoint {
   id: ID;
   capability: string;

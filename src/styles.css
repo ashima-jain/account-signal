@@ -326,6 +326,14 @@ button:disabled {
   background: var(--warn-bg);
   color: var(--warn);
 }
+.chip-info {
+  background: #eef2fb;
+  color: #2b4a8f;
+}
+.chip-bad {
+  background: #fce8e6;
+  color: var(--danger);
+}
 .chip-source {
   text-transform: none;
   letter-spacing: 0;
@@ -754,4 +762,93 @@ blockquote {
   gap: 0.85rem;
   margin-top: 0.4rem;
   flex-wrap: wrap;
+}
+
+/* ─── Wedges ────────────────────────────────────────────────────────────── */
+
+.wedge-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.85rem;
+  margin-top: 0.75rem;
+}
+
+.wedge-card.disqualified {
+  opacity: 0.65;
+  border-style: dashed;
+}
+
+.wedge-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.wedge-title {
+  font-weight: 600;
+  font-size: 0.95rem;
+}
+
+.wedge-body {
+  margin-top: 0.5rem;
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+.wedge-body p {
+  margin: 0.2rem 0;
+}
+
+.wedge-body strong {
+  color: var(--text-subtle);
+  font-weight: 500;
+}
+
+.wedge-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.disqualify-reason {
+  color: var(--danger);
+}
+
+/* ─── Modal ─────────────────────────────────────────────────────────────── */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  padding: 1rem;
+}
+
+.modal-card {
+  background: var(--surface);
+  border-radius: 12px;
+  padding: 1.5rem;
+  max-width: 500px;
+  width: 100%;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.15);
+}
+
+.modal-card h3 {
+  margin: 0 0 0.5rem;
+}
+
+.modal-card label {
+  display: block;
+  margin-top: 0.75rem;
+}
+
+.modal-card textarea,
+.modal-card select {
+  width: 100%;
+  margin-top: 0.25rem;
 }

@@ -22,6 +22,7 @@ import type {
   Posture,
   SourceSystem,
   SourceType,
+  WedgeStatus,
 } from './domain/types';
 
 export class ApiError extends Error {
@@ -236,6 +237,29 @@ export const api = {
       { method: 'POST' },
       rev
     ),
+
+  // ─── Wedges ─────────────────────────────────────────────────────────────────
+
+  addWedge: (accountId: ID, rev: number, input: WedgeInput) =>
+    request<MutationResponse>(
+      `/api/accounts/${accountId}/wedges`,
+      { method: 'POST', body: JSON.stringify(input) },
+      rev
+    ),
+
+  updateWedge: (accountId: ID, wedgeId: ID, rev: number, input: Partial<WedgeInput>) =>
+    request<MutationResponse>(
+      `/api/accounts/${accountId}/wedges/${wedgeId}`,
+      { method: 'PATCH', body: JSON.stringify(input) },
+      rev
+    ),
+
+  deleteWedge: (accountId: ID, wedgeId: ID, rev: number) =>
+    request<MutationResponse>(
+      `/api/accounts/${accountId}/wedges/${wedgeId}`,
+      { method: 'DELETE' },
+      rev
+    ),
 };
 
 export interface EvidenceInput {
@@ -312,3 +336,18 @@ export interface ActionInput {
 }
 
 export type { Claim, EvidenceItem };
+
+export interface WedgeInput {
+  useCase: string;
+  businessProblem: string;
+  technicalProblem: string;
+  whyFactory: string;
+  likelyOwnerRole?: string;
+  sponsorRole?: string;
+  evidenceIds?: ID[];
+  discoveryQuestion?: string;
+  disqualifiers?: string[];
+  status?: WedgeStatus;
+  disqualifiedReason?: string;
+  disqualifyingEvidenceId?: ID;
+}

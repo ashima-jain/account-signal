@@ -20,6 +20,7 @@ const TABS = [
   { to: '.', label: 'Thesis', end: true },
   { to: 'evidence', label: 'Evidence' },
   { to: 'stakeholders', label: 'Stakeholders' },
+  { to: 'wedges', label: 'Wedges' },
   { to: 'actions', label: 'Actions' },
   { to: 'changelog', label: 'Change log' },
 ];

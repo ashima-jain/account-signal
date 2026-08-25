@@ -4,6 +4,7 @@ import AccountLayout from './screens/AccountLayout';
 import EvidenceLedger from './screens/EvidenceLedger';
 import Thesis from './screens/Thesis';
 import Stakeholders from './screens/Stakeholders';
+import Wedges from './screens/Wedges';
 import Actions from './screens/Actions';
 import ChangeLog from './screens/ChangeLog';
 
@@ -24,6 +25,7 @@ export default function App() {
             <Route index element={<Thesis />} />
             <Route path="evidence" element={<EvidenceLedger />} />
             <Route path="stakeholders" element={<Stakeholders />} />
+            <Route path="wedges" element={<Wedges />} />
             <Route path="actions" element={<Actions />} />
             <Route path="changelog" element={<ChangeLog />} />
           </Route>
