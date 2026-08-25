@@ -13,7 +13,7 @@
  */
 
 import type { Config, Context } from '@netlify/functions';
-import OpenAI from 'openai';
+import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 import { appendEvent, mutateAggregate, newEvent, newId, readAggregate } from '../lib/store';
 import {
@@ -70,16 +70,16 @@ export default async (req: Request, context: Context): Promise<Response> => {
     const loaded = await readAggregate(accountId);
     if (!loaded) return error(404, 'Account not found.');
 
-    const apiKey = Netlify.env.get('OPENAI_API_KEY');
+    const apiKey = Netlify.env.get('ANTHROPIC_API_KEY');
     if (!apiKey) {
-      return error(500, 'OPENAI_API_KEY is not set. Add it in Netlify environment variables.');
+      return error(500, 'ANTHROPIC_API_KEY is not set. Add it in Netlify environment variables.');
     }
 
     if (loaded.aggregate.evidence.length === 0) {
       return error(400, 'No evidence to analyse. Record evidence first — a thesis without evidence is a guess.');
     }
 
-    const generated = await callOpenAI(apiKey, loaded.aggregate.evidence, loaded.aggregate.claims);
+    const generated = await callClaude(apiKey, loaded.aggregate.evidence, loaded.aggregate.claims);
 
     if (generated.insufficientEvidence) {
       return jsonWithRev(
@@ -159,12 +159,12 @@ export default async (req: Request, context: Context): Promise<Response> => {
   }
 };
 
-async function callOpenAI(
+async function callClaude(
   apiKey: string,
   evidence: EvidenceItem[],
   existingClaims: Claim[]
 ): Promise<ThesisResponse> {
-  const openai = new OpenAI({ apiKey });
+  const anthropic = new Anthropic({ apiKey });
 
   const evidenceBlock = evidence
     .map((e) => {
@@ -210,23 +210,27 @@ Analyse this evidence and produce a thesis. For each claim:
 
 If the evidence is insufficient to say anything meaningful, set insufficientEvidence to true and explain why.`;
 
-  const response = await openai.chat.completions.parse({
-    model: 'gpt-4o',
-    temperature: 0.3,
+  const response = await anthropic.messages.create({
+    model: 'claude-sonnet-4-5-20250514',
     max_tokens: 2000,
-    messages: [
-      { role: 'system', content: system },
-      { role: 'user', content: user },
+    system,
+    messages: [{ role: 'user', content: user }],
+    tools: [
+      {
+        name: 'submit_thesis',
+        description: 'Submit the thesis analysis with claims and evidence citations.',
+        input_schema: THESIS_JSON_SCHEMA,
+      } as Anthropic.Tool,
     ],
-    response_format: { type: 'json_schema', json_schema: { name: 'thesis', schema: THESIS_JSON_SCHEMA } },
+    tool_choice: { type: 'tool', name: 'submit_thesis' },
   });
 
-  const parsed = response.choices[0]?.message?.parsed;
-  if (!parsed) {
+  const toolUse = response.content.find((b) => b.type === 'tool_use');
+  if (!toolUse || toolUse.type !== 'tool_use') {
     throw new BadRequestError('The model did not return a valid thesis. Try again.');
   }
 
-  return parsed as ThesisResponse;
+  return toolUse.input as ThesisResponse;
 }
 
 /** JSON Schema for OpenAI structured outputs — matches ThesisSchema. */
@@ -256,4 +260,4 @@ const THESIS_JSON_SCHEMA = {
   },
   required: ['insufficientEvidence', 'reason', 'claims'],
   additionalProperties: false,
-} as const;
+};
