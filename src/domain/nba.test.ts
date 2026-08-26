@@ -4,6 +4,10 @@
  * The NBA is deterministic: the same account state always produces the same
  * candidates in the same order. If these pass, the system never confabulates
  * a "next step" that the evidence does not justify.
+ *
+ * Scoring uses deal-stage-weighted tiers (Critical / High / Medium / Low)
+ * instead of fixed numeric scores. The same candidate changes priority
+ * depending on where the deal is.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -16,6 +20,7 @@ import type {
   Claim,
   EvidenceItem,
   Stakeholder,
+  Wedge,
 } from './types';
 
 function makeAccount(overrides: Partial<Account> = {}): Account {
@@ -85,30 +90,77 @@ function makeStakeholder(overrides: Partial<Stakeholder> = {}): Stakeholder {
   };
 }
 
+function makeWedge(overrides: Partial<Wedge> = {}): Wedge {
+  return {
+    id: 'wg-1',
+    useCase: 'Test wedge',
+    businessProblem: 'Problem',
+    technicalProblem: 'Tech problem',
+    whyFactory: 'Because',
+    likelyOwnerRole: 'Head of Eng',
+    sponsorRole: 'CTO',
+    evidenceIds: [],
+    discoveryQuestion: 'Why?',
+    disqualifiers: [],
+    proofPoints: [],
+    status: 'candidate',
+    createdAt: '2026-01-01T00:00:00Z',
+    ...overrides,
+  };
+}
+
 describe('nextBestActions', () => {
-  it('suggests recording first evidence on a blank account', () => {
+  it('suggests recording first evidence on a blank account (Critical in discovery)', () => {
     const candidates = nextBestActions(makeAggregate());
     expect(candidates[0].id).toBe('first-evidence');
-    expect(candidates[0].score).toBe(95);
+    expect(candidates[0].tier).toBe('critical');
+    expect(candidates[0].stage).toBe('discovery');
   });
 
-  it('suggests adding first stakeholder when evidence exists but no people', () => {
+  it('suggests adding first stakeholder when evidence exists but no people (High in discovery)', () => {
     const candidates = nextBestActions(
       makeAggregate({ evidence: [makeEvidence('ev-1')] })
     );
     expect(candidates[0].id).toBe('first-stakeholder');
-    expect(candidates[0].score).toBe(85);
+    expect(candidates[0].tier).toBe('high');
   });
 
-  it('suggests identifying economic buyer when none is on the map', () => {
-    const candidates = nextBestActions(
+  it('suggests identifying economic buyer — Low in discovery, High in evaluation, Critical in negotiation', () => {
+    // Discovery stage (no claims)
+    const discoveryCandidates = nextBestActions(
       makeAggregate({
         evidence: [makeEvidence('ev-1')],
         stakeholders: [makeStakeholder({ mapRoles: ['champion'] })],
       })
     );
-    expect(candidates[0].id).toBe('identify-economic-buyer');
-    expect(candidates[0].score).toBe(90);
+    const eb = discoveryCandidates.find((c) => c.id === 'identify-economic-buyer');
+    expect(eb).toBeDefined();
+    expect(eb!.tier).toBe('low');
+
+    // Evaluation stage (claims exist, no validated wedges)
+    const evalCandidates = nextBestActions(
+      makeAggregate({
+        evidence: [makeEvidence('ev-1')],
+        stakeholders: [makeStakeholder({ mapRoles: ['champion'] })],
+        claims: [makeClaim({ status: 'FACT', evidenceIds: ['ev-1'] })],
+      })
+    );
+    const ebEval = evalCandidates.find((c) => c.id === 'identify-economic-buyer');
+    expect(ebEval).toBeDefined();
+    expect(ebEval!.tier).toBe('high');
+
+    // Negotiation stage (validated wedge exists)
+    const negCandidates = nextBestActions(
+      makeAggregate({
+        evidence: [makeEvidence('ev-1')],
+        stakeholders: [makeStakeholder({ mapRoles: ['champion'] })],
+        claims: [makeClaim({ status: 'FACT', evidenceIds: ['ev-1'] })],
+        wedges: [makeWedge({ status: 'validated' })],
+      })
+    );
+    const ebNeg = negCandidates.find((c) => c.id === 'identify-economic-buyer');
+    expect(ebNeg).toBeDefined();
+    expect(ebNeg!.tier).toBe('critical');
   });
 
   it('does not suggest economic buyer when one exists', () => {
@@ -121,8 +173,10 @@ describe('nextBestActions', () => {
     expect(candidates.find((c) => c.id === 'identify-economic-buyer')).toBeUndefined();
   });
 
-  it('suggests resolving UNKNOWN claims', () => {
+  it('suggests resolving UNKNOWN claims — Medium in discovery, High in evaluation', () => {
     const unknown = makeClaim({ id: 'cl-u', status: 'UNKNOWN', text: 'Who owns the budget' });
+    // Discovery (UNKNOWN claim without other claims is still discovery since claims exist)
+    // Actually with claims, stage is evaluation
     const candidates = nextBestActions(
       makeAggregate({
         evidence: [makeEvidence('ev-1')],
@@ -132,11 +186,12 @@ describe('nextBestActions', () => {
     );
     const unknownCandidate = candidates.find((c) => c.id === 'resolve-unknown-cl-u');
     expect(unknownCandidate).toBeDefined();
-    expect(unknownCandidate!.score).toBe(70);
+    expect(unknownCandidate!.tier).toBe('high'); // evaluation stage
     expect(unknownCandidate!.claimId).toBe('cl-u');
+    expect(unknownCandidate!.stage).toBe('evaluation');
   });
 
-  it('prioritises overdue actions above everything else', () => {
+  it('prioritises overdue actions as Critical in all stages', () => {
     const overdueAction: Action = {
       id: 'act-1',
       stakeholderId: undefined,
@@ -159,8 +214,33 @@ describe('nextBestActions', () => {
         actions: [overdueAction],
       })
     );
-    expect(candidates[0].score).toBe(100);
+    expect(candidates[0].tier).toBe('critical');
     expect(candidates[0].id).toContain('overdue');
+  });
+
+  it('champion test is High in discovery, Critical in evaluation', () => {
+    // Discovery: no claims
+    const discoveryCandidates = nextBestActions(
+      makeAggregate({
+        evidence: [makeEvidence('ev-1')],
+        stakeholders: [makeStakeholder({ mapRoles: ['economic_buyer'] })],
+      })
+    );
+    const champTest = discoveryCandidates.find((c) => c.id.startsWith('champion-test'));
+    expect(champTest).toBeDefined();
+    expect(champTest!.tier).toBe('high');
+
+    // Evaluation: claims exist
+    const evalCandidates = nextBestActions(
+      makeAggregate({
+        evidence: [makeEvidence('ev-1')],
+        stakeholders: [makeStakeholder({ mapRoles: ['economic_buyer'] })],
+        claims: [makeClaim({ status: 'FACT', evidenceIds: ['ev-1'] })],
+      })
+    );
+    const champTestEval = evalCandidates.find((c) => c.id.startsWith('champion-test'));
+    expect(champTestEval).toBeDefined();
+    expect(champTestEval!.tier).toBe('critical');
   });
 
   it('returns empty for a fully covered account', () => {

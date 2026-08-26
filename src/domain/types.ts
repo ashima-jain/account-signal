@@ -352,6 +352,30 @@ export const HORIZON_LABELS: Record<Horizon, string> = {
   next_30_days: 'Next 30 days',
 };
 
+// ─── Deal stage ──────────────────────────────────────────────────────────────
+
+export type DealStage = 'discovery' | 'evaluation' | 'negotiation';
+
+export const DEAL_STAGES: DealStage[] = ['discovery', 'evaluation', 'negotiation'];
+
+export const DEAL_STAGE_LABELS: Record<DealStage, string> = {
+  discovery: 'Discovery',
+  evaluation: 'Evaluation',
+  negotiation: 'Negotiation',
+};
+
+/**
+ * Infers the deal stage from the account state — not manually set.
+ * - Discovery: no claims yet (thesis not generated)
+ * - Evaluation: claims exist but no validated wedges
+ * - Negotiation: at least one validated wedge exists
+ */
+export function inferDealStage(aggregate: AccountAggregate): DealStage {
+  if (aggregate.wedges.some((w) => w.status === 'validated')) return 'negotiation';
+  if (aggregate.claims.length > 0) return 'evaluation';
+  return 'discovery';
+}
+
 export const CHANNELS: Channel[] = [
   'email',
   'linkedin',

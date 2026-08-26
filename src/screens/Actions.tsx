@@ -10,7 +10,8 @@ import {
   type Horizon,
   type ID,
 } from '../domain/types';
-import { nextBestActions, type NbaCandidate } from '../domain/nba';
+import { nextBestActions, NBA_TIER_LABELS, type NbaCandidate } from '../domain/nba';
+import { DEAL_STAGE_LABELS } from '../domain/types';
 import { useAccount } from './AccountLayout';
 import { EmptyState } from '../components/Feedback';
 import { Chip } from '../components/Chips';
@@ -145,7 +146,11 @@ export default function Actions() {
         <div className="card nba-card">
           <div className="nba-head">
             <h2>Next Best Action</h2>
-            <Chip label={`Score ${top.score}`} tone="good" />
+            <Chip
+              label={NBA_TIER_LABELS[top.tier]}
+              tone={top.tier === 'critical' ? 'bad' : top.tier === 'high' ? 'warn' : top.tier === 'medium' ? 'info' : 'neutral'}
+            />
+            <Chip label={DEAL_STAGE_LABELS[top.stage]} tone="neutral" />
           </div>
           <p className="nba-objective">{top.objective}</p>
           <p className="subtle">{top.whyNow}</p>

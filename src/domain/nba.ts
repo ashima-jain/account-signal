@@ -6,6 +6,13 @@
  * answer; the point is to produce the right answer, which means deriving it
  * from what the evidence actually supports.
  *
+ * Scoring uses named tiers (Critical / High / Medium / Low) weighted by the
+ * deal stage. The same candidate changes priority depending on where the
+ * deal is: "no economic buyer" is Low in discovery (premature) but Critical
+ * in negotiation (blocking close). The champion test is High in discovery
+ * and Critical in evaluation/negotiation — relationship work is the
+ * highest-leverage activity in enterprise sales.
+ *
  * Each candidate is a suggestion, not a stored action. The seller picks one
  * and commits it as an Action with a concrete message and desired outcome.
  */
@@ -13,11 +20,29 @@
 import type {
   AccountAggregate,
   Channel,
+  DealStage,
   Horizon,
   ID,
 } from './types';
+import { inferDealStage } from './types';
 import { claimIsStale } from './claims';
 import { championTier, nextChampionTest } from './champion';
+
+export type NbaTier = 'critical' | 'high' | 'medium' | 'low';
+
+export const NBA_TIER_ORDER: Record<NbaTier, number> = {
+  critical: 0,
+  high: 1,
+  medium: 2,
+  low: 3,
+};
+
+export const NBA_TIER_LABELS: Record<NbaTier, string> = {
+  critical: 'Critical',
+  high: 'High',
+  medium: 'Medium',
+  low: 'Low',
+};
 
 export interface NbaCandidate {
   id: string;
@@ -29,16 +54,44 @@ export interface NbaCandidate {
   /** Which claim or stakeholder this candidate is about, for linking. */
   claimId?: ID;
   stakeholderId?: ID;
-  /** Higher is more urgent. The seller sees the top candidate first. */
-  score: number;
+  /** Priority tier — Critical > High > Medium > Low. */
+  tier: NbaTier;
+  /** The deal stage when this candidate was generated, for display. */
+  stage: DealStage;
 }
 
 /**
- * Generates candidates from the account state and returns them ranked by score.
+ * Tier matrix: [discovery, evaluation, negotiation]
+ * Each candidate generator looks up its tier by stage.
+ */
+const TIERS = {
+  overdue:        ['critical', 'critical', 'critical'] as NbaTier[],
+  noEvidence:     ['critical', 'low',      'low']      as NbaTier[],
+  noEconomicBuyer:['low',      'high',     'critical'] as NbaTier[],
+  noStakeholders: ['high',     'low',      'low']      as NbaTier[],
+  unknownClaim:   ['medium',   'high',     'medium']   as NbaTier[],
+  championTest:   ['high',     'critical', 'critical'] as NbaTier[],
+  staleClaim:     ['low',      'medium',   'high']     as NbaTier[],
+};
+
+function tierFor(candidate: keyof typeof TIERS, stage: DealStage): NbaTier {
+  const idx = DEAL_STAGE_INDEX[stage];
+  return TIERS[candidate][idx];
+}
+
+const DEAL_STAGE_INDEX: Record<DealStage, number> = {
+  discovery: 0,
+  evaluation: 1,
+  negotiation: 2,
+};
+
+/**
+ * Generates candidates from the account state and returns them ranked by tier.
  * The list is finite and honest: if there is nothing to do, it returns empty.
  */
 export function nextBestActions(aggregate: AccountAggregate): NbaCandidate[] {
   const candidates: NbaCandidate[] = [];
+  const stage = inferDealStage(aggregate);
 
   // 1. Overdue open actions — something is slipping right now.
   const now = Date.now();
@@ -53,12 +106,28 @@ export function nextBestActions(aggregate: AccountAggregate): NbaCandidate[] {
         channel: action.channel,
         horizon: 'this_week',
         stakeholderId: action.stakeholderId,
-        score: 100,
+        tier: tierFor('overdue', stage),
+        stage,
       });
     }
   }
 
-  // 2. No economic buyer identified — you cannot close without one.
+  // 2. No evidence at all — the account is a blank page.
+  if (aggregate.evidence.length === 0) {
+    candidates.push({
+      id: 'first-evidence',
+      objective: 'Record the first piece of evidence for this account',
+      whyNow:
+        'There is no evidence yet. Everything in the system has to cite evidence, so this is the first thing to do.',
+      desiredOutcome: 'At least one piece of evidence in the ledger.',
+      channel: 'other',
+      horizon: 'this_week',
+      tier: tierFor('noEvidence', stage),
+      stage,
+    });
+  }
+
+  // 3. No economic buyer identified — you cannot close without one.
   const hasEconomicBuyer = aggregate.stakeholders.some((s) =>
     s.mapRoles.includes('economic_buyer')
   );
@@ -71,11 +140,27 @@ export function nextBestActions(aggregate: AccountAggregate): NbaCandidate[] {
       desiredOutcome: 'A named person with budget authority is on the map.',
       channel: 'call',
       horizon: 'this_week',
-      score: 90,
+      tier: tierFor('noEconomicBuyer', stage),
+      stage,
     });
   }
 
-  // 3. UNKNOWN claims — each one blocks a part of the thesis.
+  // 4. No stakeholders — you cannot progress an account alone.
+  if (aggregate.stakeholders.length === 0 && aggregate.evidence.length > 0) {
+    candidates.push({
+      id: 'first-stakeholder',
+      objective: 'Add the first person you are talking to at this account',
+      whyNow:
+        'There is evidence but no stakeholders. An account with no people on the map cannot progress.',
+      desiredOutcome: 'At least one stakeholder with a role and posture.',
+      channel: 'other',
+      horizon: 'this_week',
+      tier: tierFor('noStakeholders', stage),
+      stage,
+    });
+  }
+
+  // 5. UNKNOWN claims — each one blocks a part of the thesis.
   for (const claim of aggregate.claims) {
     if (claim.status !== 'UNKNOWN') continue;
     candidates.push({
@@ -87,11 +172,12 @@ export function nextBestActions(aggregate: AccountAggregate): NbaCandidate[] {
       channel: 'call',
       horizon: 'this_week',
       claimId: claim.id,
-      score: 70,
+      tier: tierFor('unknownClaim', stage),
+      stage,
     });
   }
 
-  // 4. Champion test — the next signal to test, for the most promising stakeholder.
+  // 6. Champion test — the next signal to test, for the most promising stakeholder.
   const rankedStakeholders = [...aggregate.stakeholders]
     .map((s) => ({
       stakeholder: s,
@@ -121,13 +207,14 @@ export function nextBestActions(aggregate: AccountAggregate): NbaCandidate[] {
       channel: 'call',
       horizon: 'next_2_weeks',
       stakeholderId: stakeholder.id,
-      score: 60,
+      tier: tierFor('championTest', stage),
+      stage,
     });
     // Only suggest one champion test at a time.
     break;
   }
 
-  // 5. Stale claims — important but not urgent.
+  // 7. Stale claims — important but not urgent.
   for (const claim of aggregate.claims) {
     if (claim.status === 'UNKNOWN') continue;
     if (!claimIsStale(claim)) continue;
@@ -139,39 +226,12 @@ export function nextBestActions(aggregate: AccountAggregate): NbaCandidate[] {
       channel: 'call',
       horizon: 'next_30_days',
       claimId: claim.id,
-      score: 30,
+      tier: tierFor('staleClaim', stage),
+      stage,
     });
   }
 
-  // 6. No evidence at all — the account is a blank page.
-  if (aggregate.evidence.length === 0) {
-    candidates.push({
-      id: 'first-evidence',
-      objective: 'Record the first piece of evidence for this account',
-      whyNow:
-        'There is no evidence yet. Everything in the system has to cite evidence, so this is the first thing to do.',
-      desiredOutcome: 'At least one piece of evidence in the ledger.',
-      channel: 'other',
-      horizon: 'this_week',
-      score: 95,
-    });
-  }
-
-  // 7. No stakeholders — you cannot progress an account alone.
-  if (aggregate.stakeholders.length === 0 && aggregate.evidence.length > 0) {
-    candidates.push({
-      id: 'first-stakeholder',
-      objective: 'Add the first person you are talking to at this account',
-      whyNow:
-        'There is evidence but no stakeholders. An account with no people on the map cannot progress.',
-      desiredOutcome: 'At least one stakeholder with a role and posture.',
-      channel: 'other',
-      horizon: 'this_week',
-      score: 85,
-    });
-  }
-
-  return candidates.sort((a, b) => b.score - a.score);
+  return candidates.sort((a, b) => NBA_TIER_ORDER[a.tier] - NBA_TIER_ORDER[b.tier]);
 }
 
 /** The single top candidate, or null when the account needs nothing. */
