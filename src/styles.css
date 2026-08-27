@@ -866,3 +866,30 @@ blockquote {
   color: #2b4a8f;
   font-size: 0.875rem;
 }
+
+/* ─── Evidence categories ─────────────────────────────────────────────────── */
+
+.evidence-category-group {
+  margin-bottom: 1.25rem;
+}
+
+.evidence-category-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--accent);
+  margin: 0 0 0.5rem;
+  padding-bottom: 0.25rem;
+  border-bottom: 2px solid var(--border);
+}
+
+.evidence-analysis {
+  font-size: 0.85rem;
+  line-height: 1.5;
+  margin: 0.3rem 0;
+  color: var(--text-subtle);
+}
+
+.evidence-analysis strong {
+  color: var(--text);
+  font-weight: 500;
+}

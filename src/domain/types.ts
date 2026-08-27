@@ -70,6 +70,26 @@ export const SOURCE_TYPE_LABELS: Record<SourceType, string> = {
   inference: 'Inference (unverified)',
 };
 
+export type EvidenceCategory =
+  | 'engineering_scale'
+  | 'factory_fit'
+  | 'urgency'
+  | 'right_to_win';
+
+export const EVIDENCE_CATEGORIES: EvidenceCategory[] = [
+  'engineering_scale',
+  'factory_fit',
+  'urgency',
+  'right_to_win',
+];
+
+export const EVIDENCE_CATEGORY_LABELS: Record<EvidenceCategory, string> = {
+  engineering_scale: 'Engineering Scale',
+  factory_fit: 'Factory Use-Case Fit',
+  urgency: 'Urgency / Trigger',
+  right_to_win: 'Right to Win',
+};
+
 export interface EvidenceItem {
   id: ID;
   sourceType: SourceType;
@@ -87,6 +107,16 @@ export interface EvidenceItem {
   /** Shared in confidence. Constrains what generated outreach may repeat. */
   confidential: boolean;
   stakeholderId?: ID;
+  /** Strategic qualification category (set by auto-seeding). */
+  evidenceCategory?: EvidenceCategory;
+  /** Specific signal type, e.g. "software_engineer_headcount". */
+  signalType?: string;
+  /** Why this evidence matters for account prioritisation. */
+  whyItMatters?: string;
+  /** What this means for Factory specifically. */
+  implicationForFactory?: string;
+  /** The next question to ask to validate or deepen this finding. */
+  nextDiscoveryQuestion?: string;
 }
 
 // ─── Claims ──────────────────────────────────────────────────────────────────
@@ -100,9 +130,17 @@ export type ClaimCategory =
   | 'business_init'
   | 'tech_init'
   | 'problem'
-  | 'value';
+  | 'value'
+  | 'engineering_scale'
+  | 'factory_fit'
+  | 'urgency'
+  | 'right_to_win';
 
 export const CLAIM_CATEGORIES: ClaimCategory[] = [
+  'engineering_scale',
+  'factory_fit',
+  'urgency',
+  'right_to_win',
   'why_matters',
   'why_now',
   'trigger',
@@ -113,6 +151,10 @@ export const CLAIM_CATEGORIES: ClaimCategory[] = [
 ];
 
 export const CLAIM_CATEGORY_LABELS: Record<ClaimCategory, string> = {
+  engineering_scale: 'Engineering Scale',
+  factory_fit: 'Factory Use-Case Fit',
+  urgency: 'Urgency / Trigger',
+  right_to_win: 'Right to Win',
   why_matters: 'Why this account matters',
   why_now: 'Why now',
   trigger: 'Trigger event',

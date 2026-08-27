@@ -3,6 +3,8 @@ import { api, type EvidenceInput } from '../api';
 import {
   SOURCE_TYPES,
   SOURCE_TYPE_LABELS,
+  EVIDENCE_CATEGORIES,
+  EVIDENCE_CATEGORY_LABELS,
   type Claim,
   type EvidenceItem,
   type SourceType,
@@ -28,6 +30,55 @@ function demotionImpact(evidenceId: string, claims: Claim[], evidence: EvidenceI
     };
     return supportedStatus(trimmed, remaining) !== 'FACT';
   });
+}
+
+function renderEvidenceItem(
+  item: EvidenceItem,
+  cited: number,
+  remove: (item: EvidenceItem) => void,
+) {
+  return (
+    <li key={item.id}>
+      <div className="evidence-meta">
+        <SourceChip sourceType={item.sourceType} />
+        {item.signalType && <Chip label={item.signalType} tone="info" />}
+        {item.confidential && <Chip label="Confidential" tone="warn" />}
+        {cited === 0 ? (
+          <Chip label="Not cited" tone="neutral" />
+        ) : (
+          <Chip label={`Cited by ${cited}`} tone="good" />
+        )}
+        <span className="subtle">
+          {item.sourceRef ? `${item.sourceRef} · ` : ''}
+          true as of {formatDate(item.asOf)} ({ageLabel(item.asOf)})
+        </span>
+      </div>
+
+      <blockquote>{item.verbatim}</blockquote>
+
+      {item.whyItMatters && (
+        <p className="evidence-analysis"><strong>Why it matters:</strong> {item.whyItMatters}</p>
+      )}
+      {item.implicationForFactory && (
+        <p className="evidence-analysis"><strong>For Factory:</strong> {item.implicationForFactory}</p>
+      )}
+      {item.nextDiscoveryQuestion && (
+        <p className="evidence-analysis"><strong>Next question:</strong> {item.nextDiscoveryQuestion}</p>
+      )}
+
+      <div className="evidence-foot">
+        {item.externalUrl && (
+          <a href={item.externalUrl} target="_blank" rel="noreferrer">
+            Open source
+          </a>
+        )}
+        <span className="subtle">via {item.sourceSystem}</span>
+        <button type="button" className="danger-quiet" onClick={() => remove(item)}>
+          Remove
+        </button>
+      </div>
+    </li>
+  );
 }
 
 const EMPTY_FORM = {
@@ -207,42 +258,30 @@ export default function EvidenceLedger() {
             </p>
           </EmptyState>
         ) : (
-          <ul className="evidence-list">
-            {visible.map((item) => {
-              const cited = citationCounts.get(item.id) ?? 0;
+          <>
+            {EVIDENCE_CATEGORIES.map((cat) => {
+              const catItems = visible.filter((item) => item.evidenceCategory === cat);
+              if (catItems.length === 0) return null;
               return (
-                <li key={item.id}>
-                  <div className="evidence-meta">
-                    <SourceChip sourceType={item.sourceType} />
-                    {item.confidential && <Chip label="Confidential" tone="warn" />}
-                    {cited === 0 ? (
-                      <Chip label="Not cited" tone="neutral" />
-                    ) : (
-                      <Chip label={`Cited by ${cited}`} tone="good" />
-                    )}
-                    <span className="subtle">
-                      {item.sourceRef ? `${item.sourceRef} · ` : ''}
-                      true as of {formatDate(item.asOf)} ({ageLabel(item.asOf)})
-                    </span>
-                  </div>
-
-                  <blockquote>{item.verbatim}</blockquote>
-
-                  <div className="evidence-foot">
-                    {item.externalUrl && (
-                      <a href={item.externalUrl} target="_blank" rel="noreferrer">
-                        Open source
-                      </a>
-                    )}
-                    <span className="subtle">via {item.sourceSystem}</span>
-                    <button type="button" className="danger-quiet" onClick={() => remove(item)}>
-                      Remove
-                    </button>
-                  </div>
-                </li>
+                <div key={cat} className="evidence-category-group">
+                  <h3 className="evidence-category-title">{EVIDENCE_CATEGORY_LABELS[cat]}</h3>
+                  <ul className="evidence-list">
+                    {catItems.map((item) => renderEvidenceItem(item, citationCounts.get(item.id) ?? 0, remove))}
+                  </ul>
+                </div>
               );
             })}
-          </ul>
+            {/* Evidence without a category (manually added) */}
+            {(() => {
+              const uncategorized = visible.filter((item) => !item.evidenceCategory);
+              if (uncategorized.length === 0) return null;
+              return (
+                <ul className="evidence-list">
+                  {uncategorized.map((item) => renderEvidenceItem(item, citationCounts.get(item.id) ?? 0, remove))}
+                </ul>
+              );
+            })()}
+          </>
         )}
       </div>
     </div>
