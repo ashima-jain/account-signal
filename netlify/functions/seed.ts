@@ -10,8 +10,8 @@
  *    and what should I validate next?"
  *
  * Output:
- * - 12-14 evidence items with strategic analysis (why it matters, implication
- *   for Factory, next discovery question)
+ * - whyItMatters: a 2-3 sentence narrative explaining why this account matters
+ * - 12-14 evidence items with strategic analysis and status (FACT/HYPOTHESIS/UNKNOWN)
  * - 4 rating claims (HYPOTHESIS) — one per criterion
  * - 1 thesis claim (HYPOTHESIS) — "This account is attractive because..."
  * - 3-5 UNKNOWN claims — "what must be validated before this becomes Tier 1"
@@ -29,6 +29,7 @@ import {
   type EvidenceItem,
   type Claim,
   type ClaimCategory,
+  type ClaimStatus,
   type Stakeholder,
   type Wedge,
   type SourceType,
@@ -44,6 +45,7 @@ export const config: Config = {
 const SEED_JSON_SCHEMA = {
   type: 'object',
   properties: {
+    whyItMatters: { type: 'string' },
     evidence: {
       type: 'array',
       items: {
@@ -56,11 +58,12 @@ const SEED_JSON_SCHEMA = {
           sourceRef: { type: 'string' },
           externalUrl: { type: 'string' },
           asOf: { type: 'string' },
+          status: { type: 'string', enum: ['FACT', 'HYPOTHESIS', 'UNKNOWN'] },
           whyItMatters: { type: 'string' },
           implicationForFactory: { type: 'string' },
           nextDiscoveryQuestion: { type: 'string' },
         },
-        required: ['evidenceCategory', 'signalType', 'verbatim', 'sourceType', 'sourceRef', 'asOf', 'whyItMatters', 'implicationForFactory', 'nextDiscoveryQuestion'],
+        required: ['evidenceCategory', 'signalType', 'verbatim', 'sourceType', 'sourceRef', 'asOf', 'status', 'whyItMatters', 'implicationForFactory', 'nextDiscoveryQuestion'],
         additionalProperties: false,
       },
     },
@@ -114,11 +117,12 @@ const SEED_JSON_SCHEMA = {
       },
     },
   },
-  required: ['evidence', 'claims', 'stakeholders', 'wedges'],
+  required: ['whyItMatters', 'evidence', 'claims', 'stakeholders', 'wedges'],
   additionalProperties: false,
 };
 
 interface SeedData {
+  whyItMatters: string;
   evidence: Array<{
     evidenceCategory: string;
     signalType: string;
@@ -127,6 +131,7 @@ interface SeedData {
     sourceRef: string;
     externalUrl?: string;
     asOf: string;
+    status: string;
     whyItMatters: string;
     implicationForFactory: string;
     nextDiscoveryQuestion: string;
@@ -203,12 +208,16 @@ export default async (req: Request, context: Context): Promise<Response> => {
           confidential: false,
           evidenceCategory: ev.evidenceCategory as EvidenceCategory,
           signalType: ev.signalType,
+          status: ev.status as ClaimStatus,
           whyItMatters: ev.whyItMatters,
           implicationForFactory: ev.implicationForFactory,
           nextDiscoveryQuestion: ev.nextDiscoveryQuestion,
         };
         aggregate.evidence.push(item);
       }
+
+      // Store the narrative.
+      aggregate.whyItMatters = seedData.whyItMatters;
 
       // Create claims (ratings + thesis + unknowns).
       for (const c of seedData.claims) {
@@ -350,6 +359,8 @@ IMPORTANT RULE: Right to Win cannot be rated High based on public web evidence a
 
 ## Output requirements
 
+whyItMatters: A 2-3 sentence narrative explaining why this account matters to Factory, tying the 4 categories together. Be specific and honest — if the account is weak in a category, say so.
+
 For each evidence item:
 - evidenceCategory: which of the 4 criteria it belongs to
 - signalType: the specific signal (e.g. "software_engineer_headcount", "legacy_modernisation", "new_cto_appointment")
@@ -358,6 +369,7 @@ For each evidence item:
 - sourceRef: the domain or publication name
 - externalUrl: the article URL if available
 - asOf: ISO date (YYYY-MM-DD)
+- status: FACT (confirmed by filing/earnings call or corroborated), HYPOTHESIS (single-source news/job posting), or UNKNOWN (uncertain)
 - whyItMatters: why this evidence matters for account prioritisation
 - implicationForFactory: what this means for Factory specifically
 - nextDiscoveryQuestion: the next question to ask to validate or deepen this finding
@@ -380,7 +392,7 @@ For wedges (3-4):
 
 Do not optimise for volume. Prefer evidence that changes account prioritisation.`;
 
-  const user = `Research "${companyName}" and produce a strategic qualification assessment. Search the web for engineering scale, Factory use-case fit, urgency/triggers, and right to win. Return 12-14 evidence items, 8-10 claims (4 ratings + 1 thesis + 3-5 unknowns), 5 stakeholders, and 3-4 wedges.`;
+  const user = `Research "${companyName}" and produce a strategic qualification assessment. Search the web for engineering scale, Factory use-case fit, urgency/triggers, and right to win. Return a whyItMatters narrative, 12-14 evidence items (each with a status of FACT/HYPOTHESIS/UNKNOWN), 8-10 claims (4 ratings + 1 thesis + 3-5 unknowns), 5 stakeholders, and 3-4 wedges.`;
 
   const response = await anthropic.messages.create({
     model: 'claude-haiku-4-5-20251001',

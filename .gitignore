@@ -36,3 +36,7 @@ deno.lock
 
 # macOS
 .DS_Store
+
+# Generated artifacts
+tmp/
+outputs/

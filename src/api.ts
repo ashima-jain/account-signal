@@ -281,6 +281,7 @@ export interface EvidenceInput {
   asOf?: string;
   confidential?: boolean;
   stakeholderId?: ID;
+  status?: ClaimStatus;
 }
 
 export interface ClaimInput {

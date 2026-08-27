@@ -1,15 +1,19 @@
 /**
  * Thesis generator.
  *
- * The LLM proposes claims; the server enforces the FACT invariant. The model
- * is given evidence verbatim and asked to identify patterns, not to invent
- * facts. If the evidence does not support a thesis, the model returns
- * insufficient_evidence rather than confabulating.
+ * The LLM proposes claims and a narrative; the server enforces the FACT
+ * invariant. The model is given evidence verbatim and asked to identify
+ * patterns, not to invent facts. If the evidence does not support a thesis,
+ * the model returns insufficient_evidence rather than confabulating.
  *
  * Every generated claim is validated against the same claimInvariantError
  * function that manual claims pass through. A claim the model labels FACT
  * that fails validation is downgraded to HYPOTHESIS; a claim citing no
  * evidence becomes UNKNOWN. The model cannot override these rules.
+ *
+ * The generator also produces:
+ * - whyItMatters: a 2-3 sentence narrative explaining why this account matters
+ * - evidenceStatuses: a map of evidence ID → FACT/HYPOTHESIS/UNKNOWN
  */
 
 import type { Config, Context } from '@netlify/functions';
@@ -28,6 +32,7 @@ import {
   CLAIM_CATEGORIES,
   type Claim,
   type ClaimCategory,
+  type ClaimStatus,
   type EvidenceItem,
 } from '../../src/domain/types';
 import { claimInvariantError } from '../../src/domain/claims';
@@ -39,10 +44,21 @@ export const config: Config = {
 const ThesisSchema = z.object({
   insufficientEvidence: z.boolean(),
   reason: z.string().nullable(),
+  whyItMatters: z.string().nullable(),
+  evidenceStatuses: z.array(
+    z.object({
+      evidenceId: z.string(),
+      status: z.enum(['FACT', 'HYPOTHESIS', 'UNKNOWN']),
+    })
+  ),
   claims: z.array(
     z.object({
       text: z.string(),
       category: z.enum([
+        'engineering_scale',
+        'factory_fit',
+        'urgency',
+        'right_to_win',
         'why_matters',
         'why_now',
         'trigger',
@@ -129,6 +145,14 @@ export default async (req: Request, context: Context): Promise<Response> => {
       newClaims.push(claim);
     }
 
+    // Build a map of evidence ID → status from the model's output.
+    const evidenceStatusMap = new Map<string, ClaimStatus>();
+    for (const es of generated.evidenceStatuses) {
+      if (evidenceById.has(es.evidenceId)) {
+        evidenceStatusMap.set(es.evidenceId, es.status as ClaimStatus);
+      }
+    }
+
     const outcome = await mutateAggregate(accountId, expectedRev(req), (aggregate) => {
       // Replace existing claims with the generated ones.
       const oldClaimIds = new Set(aggregate.claims.map((c) => c.id));
@@ -137,6 +161,17 @@ export default async (req: Request, context: Context): Promise<Response> => {
       // Clean up action references to removed claims.
       for (const action of aggregate.actions) {
         action.resolvesClaimIds = action.resolvesClaimIds.filter((id) => !oldClaimIds.has(id));
+      }
+
+      // Store the narrative.
+      aggregate.whyItMatters = generated.whyItMatters ?? undefined;
+
+      // Set status on each evidence item from the model's analysis.
+      for (const item of aggregate.evidence) {
+        const newStatus = evidenceStatusMap.get(item.id);
+        if (newStatus) {
+          item.status = newStatus;
+        }
       }
 
       appendEvent(
@@ -170,7 +205,8 @@ async function callClaude(
     .map((e) => {
       const label = e.sourceType === 'inference' ? ' [INFERENCE — cannot support a FACT]' : '';
       const conf = e.confidential ? ' [CONFIDENTIAL]' : '';
-      return `[${e.id}] (${e.sourceType})${label}${conf}\n${e.verbatim}`;
+      const cat = e.evidenceCategory ? ` [${e.evidenceCategory}]` : '';
+      return `[${e.id}] (${e.sourceType})${label}${conf}${cat}\n${e.verbatim}`;
     })
     .join('\n\n');
 
@@ -181,8 +217,27 @@ async function callClaude(
           .join('\n')
       : '(none yet)';
 
-  const system = `You are a strategic account analyst for an enterprise sales team.
-Your job is to read the evidence and produce an account thesis: a set of claims about why this account matters, what is happening, and what is unknown.
+  const system = `You are a strategic account analyst for Factory, an AI coding agent platform.
+Your job is to read the evidence and produce an account thesis.
+
+The evidence is organised into 4 strategic categories:
+- engineering_scale: Does the account have enough engineering surface area?
+- factory_fit: Does the account have workloads that match Factory's AI coding agent?
+- urgency: Why would they act now rather than later?
+- right_to_win: Does Factory have a credible route to win?
+
+You must produce:
+1. whyItMatters: A 2-3 sentence narrative explaining why this account matters to Factory, tying the 4 categories together. Be specific and honest — if the account is weak in a category, say so.
+2. evidenceStatuses: For each evidence item, assign a status:
+   - FACT: confirmed by a reliable source (filing, earnings call, or corroborated by multiple sources)
+   - HYPOTHESIS: single-source or inferred — likely true but not confirmed
+   - UNKNOWN: uncertain or needs validation
+3. claims: Structured assertions about the account. For each claim:
+   - text: a single clear assertion
+   - category: one of ${CLAIM_CATEGORIES.join(', ')}
+   - status: FACT, HYPOTHESIS, or UNKNOWN
+   - evidenceIds: the evidence IDs that support this claim (empty for UNKNOWN)
+   - reasoning: one sentence on why you chose this status
 
 Rules — these are enforced in code and you cannot override them:
 1. A FACT must cite at least one piece of evidence that is NOT an inference. Inference evidence is marked [INFERENCE] and cannot support a FACT.
@@ -190,8 +245,6 @@ Rules — these are enforced in code and you cannot override them:
 3. An UNKNOWN is an explicit gap. It must NOT cite any evidence — if you have evidence, it is at least a HYPOTHESIS.
 4. If the evidence is too thin to support any thesis, return insufficientEvidence: true with a reason. Do not confabulate.
 5. Every evidenceId you cite must be one of the IDs provided below.
-
-Categories: ${CLAIM_CATEGORIES.join(', ')}
 
 Be honest. The point is not to sound confident but to be accurate about what is known and what is not.`;
 
@@ -201,24 +254,22 @@ ${evidenceBlock}
 Existing claims:
 ${existingBlock}
 
-Analyse this evidence and produce a thesis. For each claim:
-- text: a single clear assertion
-- category: one of ${CLAIM_CATEGORIES.join(', ')}
-- status: FACT, HYPOTHESIS, or UNKNOWN
-- evidenceIds: the evidence IDs that support this claim (empty for UNKNOWN)
-- reasoning: one sentence on why you chose this status
+Analyse this evidence and produce:
+1. A whyItMatters narrative (2-3 sentences)
+2. A status for each evidence item (FACT, HYPOTHESIS, or UNKNOWN)
+3. A set of claims about this account
 
 If the evidence is insufficient to say anything meaningful, set insufficientEvidence to true and explain why.`;
 
   const response = await anthropic.messages.create({
     model: 'claude-haiku-4-5-20251001',
-    max_tokens: 2000,
+    max_tokens: 4000,
     system,
     messages: [{ role: 'user', content: user }],
     tools: [
       {
         name: 'submit_thesis',
-        description: 'Submit the thesis analysis with claims and evidence citations.',
+        description: 'Submit the thesis analysis with narrative, evidence statuses, and claims.',
         input_schema: THESIS_JSON_SCHEMA,
       } as Anthropic.Tool,
     ],
@@ -233,12 +284,24 @@ If the evidence is insufficient to say anything meaningful, set insufficientEvid
   return toolUse.input as ThesisResponse;
 }
 
-/** JSON Schema for OpenAI structured outputs — matches ThesisSchema. */
 const THESIS_JSON_SCHEMA = {
   type: 'object',
   properties: {
     insufficientEvidence: { type: 'boolean' },
     reason: { type: ['string', 'null'] },
+    whyItMatters: { type: ['string', 'null'] },
+    evidenceStatuses: {
+      type: 'array',
+      items: {
+        type: 'object',
+        properties: {
+          evidenceId: { type: 'string' },
+          status: { type: 'string', enum: ['FACT', 'HYPOTHESIS', 'UNKNOWN'] },
+        },
+        required: ['evidenceId', 'status'],
+        additionalProperties: false,
+      },
+    },
     claims: {
       type: 'array',
       items: {
@@ -247,7 +310,19 @@ const THESIS_JSON_SCHEMA = {
           text: { type: 'string' },
           category: {
             type: 'string',
-            enum: ['why_matters', 'why_now', 'trigger', 'business_init', 'tech_init', 'problem', 'value'],
+            enum: [
+              'engineering_scale',
+              'factory_fit',
+              'urgency',
+              'right_to_win',
+              'why_matters',
+              'why_now',
+              'trigger',
+              'business_init',
+              'tech_init',
+              'problem',
+              'value',
+            ],
           },
           status: { type: 'string', enum: ['FACT', 'HYPOTHESIS', 'UNKNOWN'] },
           evidenceIds: { type: 'array', items: { type: 'string' } },
@@ -258,6 +333,6 @@ const THESIS_JSON_SCHEMA = {
       },
     },
   },
-  required: ['insufficientEvidence', 'reason', 'claims'],
+  required: ['insufficientEvidence', 'reason', 'whyItMatters', 'evidenceStatuses', 'claims'],
   additionalProperties: false,
 };

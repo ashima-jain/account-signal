@@ -893,3 +893,93 @@ blockquote {
   color: var(--text);
   font-weight: 500;
 }
+
+/* ─── Thesis page ──────────────────────────────────────────────────────────── */
+
+.thesis-narrative-card {
+  border-left: 4px solid var(--accent);
+}
+
+.thesis-narrative {
+  font-size: 1rem;
+  line-height: 1.6;
+  margin: 0.5rem 0 0;
+  color: var(--text);
+}
+
+.thesis-category-group {
+  margin-bottom: 1.5rem;
+}
+
+.thesis-category-head {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.5rem;
+}
+
+.thesis-category-head h3 {
+  margin: 0;
+}
+
+.thesis-evidence-item {
+  border-top: 1px solid var(--border);
+  padding: 0.8rem 0;
+}
+
+.thesis-evidence-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.3rem;
+}
+
+.thesis-status-dot {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 0.15rem 0.5rem;
+  border-radius: 4px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.thesis-status-dot.fact {
+  background: var(--fact-bg);
+  color: var(--fact);
+}
+
+.thesis-status-dot.hypothesis {
+  background: var(--hypothesis-bg);
+  color: var(--hypothesis);
+}
+
+.thesis-status-dot.unknown {
+  background: var(--unknown-bg);
+  color: var(--unknown);
+}
+
+.thesis-status-dot.unmarked {
+  background: var(--unknown-bg);
+  color: var(--unknown);
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.thesis-evidence-analysis {
+  margin: 0.5rem 0;
+  padding: 0.5rem 0.75rem;
+  background: var(--bg);
+  border-radius: var(--radius);
+}
+
+.thesis-evidence-actions {
+  display: flex;
+  gap: 0.85rem;
+  margin-top: 0.4rem;
+  flex-wrap: wrap;
+}

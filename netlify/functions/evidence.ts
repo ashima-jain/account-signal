@@ -28,6 +28,7 @@ import {
 import {
   SOURCE_SYSTEMS,
   SOURCE_TYPES,
+  type ClaimStatus,
   type EvidenceItem,
   type SourceSystem,
   type SourceType,
@@ -182,6 +183,23 @@ async function updateEvidence(
     }
     if (body.confidential !== undefined) item.confidential = body.confidential === true;
     if (body.asOf !== undefined) item.asOf = parseTimestamp(body.asOf, 'asOf', item.asOf);
+    if (body.status !== undefined) {
+      const validStatuses: ClaimStatus[] = ['FACT', 'HYPOTHESIS', 'UNKNOWN'];
+      const newStatus = body.status as string;
+      if (!validStatuses.includes(newStatus as ClaimStatus)) {
+        throw new BadRequestError(`"status" must be one of: ${validStatuses.join(', ')}.`);
+      }
+      const previousStatus = item.status;
+      item.status = newStatus as ClaimStatus;
+      appendEvent(
+        aggregate,
+        newEvent(
+          'evidence_status_changed',
+          `Evidence status changed: "${item.verbatim.slice(0, 60)}…" ${previousStatus ?? 'unmarked'} → ${newStatus}.`,
+          { entityRef: `evidence:${item.id}` }
+        )
+      );
+    }
 
     // Downgrading a source to an inference must un-prove anything resting on it.
     const demotions = reconcileClaims(aggregate.claims, aggregate.evidence);
