@@ -3,9 +3,6 @@
   publish = "dist"
   functions = "netlify/functions"
 
-[functions]
-  timeout = 26
-
 # Functions declare their own /api/* routes via `export const config = { path }`,
 # so no /api/* rewrite is needed. Function routes are matched before this
 # SPA fallback.
