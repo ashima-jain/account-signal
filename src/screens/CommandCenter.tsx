@@ -43,11 +43,28 @@ export default function CommandCenter() {
         await api.seedAccount(result.aggregate.account.id, result.aggregate.rev);
         await load();
       } catch (seedErr) {
-        // Seeding failed — the account is still created, just not populated.
-        // Show the error but don't block the user.
-        setError(
-          `Account created for ${name}, but auto-research failed: ${seedErr instanceof Error ? seedErr.message : 'unknown error'}. You can add evidence manually.`
-        );
+        // The seed call may have timed out (504) but the server often
+        // completes the work anyway. Poll the account to check.
+        const accountId = result.aggregate.account.id;
+        let seeded = false;
+        for (let attempt = 0; attempt < 8; attempt++) {
+          await new Promise((r) => setTimeout(r, 3000));
+          try {
+            const updated = await api.getAccount(accountId);
+            if (updated.evidence.length > 0) {
+              seeded = true;
+              await load();
+              break;
+            }
+          } catch {
+            // Account fetch failed — keep polling.
+          }
+        }
+        if (!seeded) {
+          setError(
+            `Account created for ${name}, but auto-research failed: ${seedErr instanceof Error ? seedErr.message : 'unknown error'}. You can add evidence manually.`
+          );
+        }
       } finally {
         setSeeding(null);
       }

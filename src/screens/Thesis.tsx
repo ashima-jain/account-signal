@@ -112,6 +112,11 @@ export default function Thesis() {
           <span className="subtle">
             {formatDate(item.asOf)} ({ageLabel(item.asOf)})
           </span>
+          {item.externalUrl && (
+            <a href={item.externalUrl} target="_blank" rel="noreferrer" className="link-button">
+              Open source
+            </a>
+          )}
         </div>
 
         <blockquote>{item.verbatim}</blockquote>
