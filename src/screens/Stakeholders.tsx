@@ -262,6 +262,9 @@ function StakeholderCard({
     () => evidencedSignalTypes(signals, evidence as never),
     [signals, evidence]
   );
+  const isChampionTrack =
+    s.mapRoles.includes('champion') ||
+    signals.length > 0;
 
   async function recordSignal(signalType: ChampionSignalType, evidenceId: ID) {
     setError(null);
@@ -308,9 +311,11 @@ function StakeholderCard({
       {conflict && <p className="hint">{conflict}</p>}
 
       <div className="stakeholder-actions">
-        <button type="button" className="link-button" onClick={onToggle}>
-          {expanded ? 'Hide' : 'Show'} champion test
-        </button>
+        {isChampionTrack && (
+          <button type="button" className="link-button" onClick={onToggle}>
+            {expanded ? 'Hide' : 'Show'} champion test
+          </button>
+        )}
         <select
           className="posture-select"
           value={s.posture}
@@ -327,7 +332,7 @@ function StakeholderCard({
         </button>
       </div>
 
-      {expanded && (
+      {expanded && isChampionTrack && (
         <div className="champion-test">
           <p className="subtle">
             {seen.size} of 8 signals evidenced. A signal counts only when observed with linked

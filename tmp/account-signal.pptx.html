@@ -1,0 +1,314 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      .slide {
+        font-family: Arial, Helvetica, sans-serif;
+        color: #1a1a1a;
+        padding: 48px 56px;
+        background: #ffffff;
+        box-sizing: border-box;
+      }
+      .slide h1 {
+        font-size: 38px;
+        margin: 0 0 20px;
+        font-weight: 700;
+      }
+      .slide h2 {
+        font-size: 22px;
+        margin: 0 0 12px;
+        font-weight: 600;
+        color: #4a4a4a;
+      }
+      .slide p {
+        font-size: 20px;
+        line-height: 1.5;
+        margin: 0 0 10px;
+      }
+      .slide ul {
+        font-size: 20px;
+        line-height: 1.65;
+        margin: 0 0 14px;
+        padding-left: 24px;
+      }
+      .slide li {
+        margin-bottom: 6px;
+      }
+      .accent { color: #1f6feb; font-weight: 600; }
+      .fact { color: #0f7a4f; font-weight: 600; }
+      .hyp { color: #8a5a00; font-weight: 600; }
+      .unk { color: #5b616b; font-weight: 600; }
+
+      /* Title slide */
+      .slide.title {
+        background: linear-gradient(135deg, #0b2545 0%, #1f4fd8 100%);
+        color: #ffffff;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+      }
+      .slide.title h1 {
+        font-size: 48px;
+        margin: 0 0 12px;
+      }
+      .slide.title p {
+        font-size: 24px;
+        opacity: 0.85;
+        margin: 0;
+      }
+      .slide.title .tag {
+        font-size: 18px;
+        opacity: 0.6;
+        margin-top: 24px;
+      }
+
+      /* Two-column layout */
+      .two-col {
+        display: flex;
+        gap: 32px;
+      }
+      .two-col > div {
+        flex: 1;
+      }
+
+      /* Architecture boxes */
+      .arch-box {
+        border: 2px solid #e2e5ea;
+        border-radius: 10px;
+        padding: 14px 16px;
+        margin-bottom: 10px;
+        text-align: center;
+      }
+      .arch-box .label {
+        font-size: 18px;
+        font-weight: 700;
+        margin-bottom: 4px;
+      }
+      .arch-box .sub {
+        font-size: 14px;
+        color: #646c78;
+      }
+      .arch-browser { border-color: #1f6feb; background: #f0f5ff; }
+      .arch-netlify { border-color: #0f7a4f; background: #f0faf5; }
+      .arch-ai { border-color: #8a5a00; background: #fdf8ee; }
+      .arch-domain { border-color: #5b616b; background: #f5f6f7; }
+
+      .arrow {
+        text-align: center;
+        font-size: 22px;
+        color: #999;
+        margin: 2px 0;
+      }
+
+      /* Tier table */
+      .tier-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 16px;
+      }
+      .tier-table th {
+        background: #f0f5ff;
+        padding: 8px 10px;
+        text-align: left;
+        font-weight: 600;
+        font-size: 15px;
+      }
+      .tier-table td {
+        padding: 7px 10px;
+        border-bottom: 1px solid #e2e5ea;
+        font-size: 15px;
+      }
+      .tier-critical { color: #b3261e; font-weight: 700; }
+      .tier-high { color: #8a5a00; font-weight: 700; }
+      .tier-medium { color: #1f6feb; font-weight: 700; }
+      .tier-low { color: #646c78; font-weight: 700; }
+
+      /* Stat cards */
+      .stat-row {
+        display: flex;
+        gap: 16px;
+        margin: 16px 0;
+      }
+      .stat-card {
+        flex: 1;
+        border-radius: 10px;
+        padding: 16px;
+        text-align: center;
+        background: #f5f6f7;
+      }
+      .stat-card .num {
+        font-size: 32px;
+        font-weight: 700;
+        color: #1f4fd8;
+      }
+      .stat-card .lbl {
+        font-size: 14px;
+        color: #646c78;
+        margin-top: 4px;
+      }
+
+      .footer {
+        position: absolute;
+        bottom: 20px;
+        left: 56px;
+        font-size: 13px;
+        color: #999;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Slide 1: Title -->
+    <section class="slide title">
+      <h1>Account Signal</h1>
+      <p>Evidence-first execution system for enterprise sellers</p>
+      <p class="tag">Built with Factory's AI coding agent · Deployed on Netlify</p>
+    </section>
+
+    <!-- Slide 2: The Problem & The 5 Core Ideas -->
+    <section class="slide">
+      <h1>What it does</h1>
+      <p>Compresses 4 hours of account research into 30 seconds — then tells you what to do next.</p>
+      <div class="two-col" style="margin-top: 16px;">
+        <div>
+          <h2>5 Core Ideas</h2>
+          <ul>
+            <li><span class="accent">Evidence is the spine</span> — everything cites it</li>
+            <li><span class="fact">FACT</span> / <span class="hyp">HYPOTHESIS</span> / <span class="unk">UNKNOWN</span> — server-enforced labels</li>
+            <li><span class="accent">8-signal champion test</span> — pure function, not gut feel</li>
+            <li><span class="accent">Deterministic NBA</span> — deal-stage weighted tiers</li>
+            <li><span class="accent">Auto-seeding</span> — Claude web search on account creation</li>
+          </ul>
+        </div>
+        <div>
+          <h2>The key principle</h2>
+          <p style="font-size: 18px; line-height: 1.6;">
+            The <span class="accent">model's job</span> is research —
+            thesis generation, web search.
+          </p>
+          <p style="font-size: 18px; line-height: 1.6;">
+            The <span class="fact">code's job</span> is judgment —
+            FACT invariant, champion tier, NBA, staleness.
+          </p>
+          <p style="font-size: 18px; line-height: 1.6; margin-top: 12px;">
+            <strong>The AI proposes; the code verifies.</strong>
+          </p>
+          <div class="stat-row" style="margin-top: 18px;">
+            <div class="stat-card">
+              <div class="num">9</div>
+              <div class="lbl">Serverless functions</div>
+            </div>
+            <div class="stat-card">
+              <div class="num">7</div>
+              <div class="lbl">Screens</div>
+            </div>
+            <div class="stat-card">
+              <div class="num">48</div>
+              <div class="lbl">Domain tests</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="footer">accountmapping.netlify.app</div>
+    </section>
+
+    <!-- Slide 3: Architecture -->
+    <section class="slide">
+      <h1>Architecture</h1>
+      <div class="two-col">
+        <div>
+          <h2>Stack</h2>
+          <div class="arch-box arch-browser">
+            <div class="label">React SPA</div>
+            <div class="sub">Vite + TypeScript · 7 screens<br/>BrowserRouter · typed API client</div>
+          </div>
+          <div class="arrow">↕ REST + If-Match rev</div>
+          <div class="arch-box arch-netlify">
+            <div class="label">9 Netlify Functions</div>
+            <div class="sub">Serverless · declared routes<br/>Rev-based CAS · Netlify Blobs</div>
+          </div>
+          <div class="arrow">↕ structured output + web_search</div>
+          <div class="arch-box arch-ai">
+            <div class="label">Claude Haiku 4.5</div>
+            <div class="sub">Anthropic API<br/>Thesis gen · auto-seeding</div>
+          </div>
+        </div>
+        <div>
+          <h2>Shared domain model</h2>
+          <div class="arch-box arch-domain">
+            <div class="label">Pure TypeScript</div>
+            <div class="sub">Shared client + server</div>
+          </div>
+          <ul style="font-size: 17px; margin-top: 12px;">
+            <li><span class="fact">FACT invariant</span> — claimInvariantError()</li>
+            <li><span class="accent">Champion tier</span> — pure function of signals</li>
+            <li><span class="accent">NBA engine</span> — deal-stage weighted tiers</li>
+            <li><span class="unk">Staleness</span> — 90-day threshold</li>
+          </ul>
+          <p style="font-size: 16px; margin-top: 14px; color: #646c78;">
+            48 vitest tests lock in every invariant.<br/>
+            Git push → Netlify auto-deploys.
+          </p>
+        </div>
+      </div>
+      <div class="footer">accountmapping.netlify.app</div>
+    </section>
+
+    <!-- Slide 4: NBA Deal-Stage Tiers -->
+    <section class="slide">
+      <h1>Next Best Action — deal-stage weighted tiers</h1>
+      <p style="font-size: 18px; margin-bottom: 14px;">
+        The same candidate changes priority depending on where the deal is.
+        Stage is inferred from account state — not manually set.
+      </p>
+      <table class="tier-table">
+        <tr>
+          <th>Candidate</th>
+          <th>Discovery</th>
+          <th>Evaluation</th>
+          <th>Negotiation</th>
+        </tr>
+        <tr>
+          <td>Overdue action</td>
+          <td class="tier-critical">Critical</td>
+          <td class="tier-critical">Critical</td>
+          <td class="tier-critical">Critical</td>
+        </tr>
+        <tr>
+          <td>No evidence</td>
+          <td class="tier-critical">Critical</td>
+          <td class="tier-low">Low</td>
+          <td class="tier-low">Low</td>
+        </tr>
+        <tr>
+          <td>No economic buyer</td>
+          <td class="tier-low">Low</td>
+          <td class="tier-high">High</td>
+          <td class="tier-critical">Critical</td>
+        </tr>
+        <tr>
+          <td>UNKNOWN claims</td>
+          <td class="tier-medium">Medium</td>
+          <td class="tier-high">High</td>
+          <td class="tier-medium">Medium</td>
+        </tr>
+        <tr>
+          <td>Champion test</td>
+          <td class="tier-high">High</td>
+          <td class="tier-critical">Critical</td>
+          <td class="tier-critical">Critical</td>
+        </tr>
+        <tr>
+          <td>Stale claims</td>
+          <td class="tier-low">Low</td>
+          <td class="tier-medium">Medium</td>
+          <td class="tier-high">High</td>
+        </tr>
+      </table>
+      <p style="font-size: 16px; margin-top: 14px; color: #646c78;">
+        <strong>Stage inference:</strong> no claims = Discovery · claims but no validated wedges = Evaluation · validated wedge = Negotiation
+      </p>
+      <div class="footer">accountmapping.netlify.app</div>
+    </section>
+  </body>
+</html>
