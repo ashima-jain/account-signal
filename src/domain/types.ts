@@ -1,57 +1,34 @@
 /**
- * Account Signal domain model.
+ * Domain model shared by the browser bundle and the serverless functions.
  *
- * Pure types shared by the React client and the Netlify Functions so that
- * invariants (FACT citation rules, champion tiers, action scoring) are
- * evaluated identically on both sides.
+ * Nothing in this file talks to the network or to storage: it is the vocabulary
+ * plus the invariants that the rest of the system is not allowed to break.
  */
 
 export type ID = string;
 
 // ─── Evidence ────────────────────────────────────────────────────────────────
 
-/**
- * Which system the evidence arrived from. `manual` is the only producer today;
- * the rest exist so MCP/API ingestion is an additional producer of the same
- * shape rather than a parallel model.
- */
-export type SourceSystem =
-  | 'manual'
-  | 'granola'
-  | 'gmail'
-  | 'calendar'
-  | 'crm'
-  | 'notion'
-  | 'linkedin';
-
-/**
- * `inference` marks the model's own reasoning. It is stored honestly as
- * evidence but can never support a FACT.
- */
 export type SourceType =
   | 'earnings_call'
   | 'filing'
   | 'job_posting'
+  | 'engineering_blog'
+  | 'repo_activity'
+  | 'conference_talk'
   | 'news'
   | 'linkedin'
   | 'conversation'
   | 'document'
   | 'inference';
 
-export const SOURCE_SYSTEMS: SourceSystem[] = [
-  'manual',
-  'granola',
-  'gmail',
-  'calendar',
-  'crm',
-  'notion',
-  'linkedin',
-];
-
 export const SOURCE_TYPES: SourceType[] = [
   'earnings_call',
   'filing',
   'job_posting',
+  'engineering_blog',
+  'repo_activity',
+  'conference_talk',
   'news',
   'linkedin',
   'conversation',
@@ -63,6 +40,9 @@ export const SOURCE_TYPE_LABELS: Record<SourceType, string> = {
   earnings_call: 'Earnings call',
   filing: 'Filing',
   job_posting: 'Job posting',
+  engineering_blog: 'Engineering blog',
+  repo_activity: 'Public repo activity',
+  conference_talk: 'Conference talk',
   news: 'News',
   linkedin: 'LinkedIn',
   conversation: 'Conversation',
@@ -70,54 +50,134 @@ export const SOURCE_TYPE_LABELS: Record<SourceType, string> = {
   inference: 'Inference (unverified)',
 };
 
+/**
+ * `inference` is the one source type that can never support a FACT: it records
+ * the seller's or the model's reasoning, not an observation of the world.
+ */
+export function isVerifiableSource(sourceType: SourceType): boolean {
+  return sourceType !== 'inference';
+}
+
+export type SourceSystem =
+  | 'manual'
+  | 'web_research'
+  | 'granola'
+  | 'gmail'
+  | 'calendar'
+  | 'crm'
+  | 'notion'
+  | 'linkedin';
+
+export const SOURCE_SYSTEMS: SourceSystem[] = [
+  'manual',
+  'web_research',
+  'granola',
+  'gmail',
+  'calendar',
+  'crm',
+  'notion',
+  'linkedin',
+];
+
+/** The four criteria an account is qualified against. */
 export type EvidenceCategory =
   | 'engineering_scale'
-  | 'factory_fit'
+  | 'devin_fit'
   | 'urgency'
   | 'right_to_win';
 
 export const EVIDENCE_CATEGORIES: EvidenceCategory[] = [
   'engineering_scale',
-  'factory_fit',
+  'devin_fit',
   'urgency',
   'right_to_win',
 ];
 
 export const EVIDENCE_CATEGORY_LABELS: Record<EvidenceCategory, string> = {
   engineering_scale: 'Engineering Scale',
-  factory_fit: 'Factory Use-Case Fit',
+  devin_fit: 'Devin Use-Case Fit',
   urgency: 'Urgency / Trigger',
   right_to_win: 'Right to Win',
+};
+
+export const EVIDENCE_CATEGORY_QUESTIONS: Record<EvidenceCategory, string> = {
+  engineering_scale:
+    'How many engineers, how many repos, how much legacy surface area is there to work on?',
+  devin_fit:
+    'Is there parallelisable, well-specified engineering work Devin sessions can own end to end?',
+  urgency: 'What happened recently that makes this a this-quarter problem?',
+  right_to_win:
+    'Why us, why now, and what access or proof do we have that a competitor does not?',
+};
+
+/** The kinds of engineering work Devin is bought to do. */
+export type DevinUseCase =
+  | 'migration'
+  | 'refactor'
+  | 'test_coverage'
+  | 'bug_backlog'
+  | 'dependency_upgrade'
+  | 'code_review'
+  | 'codebase_qa'
+  | 'incident_response'
+  | 'ci_maintenance'
+  | 'feature_delivery'
+  | 'other';
+
+export const DEVIN_USE_CASES: DevinUseCase[] = [
+  'migration',
+  'refactor',
+  'test_coverage',
+  'bug_backlog',
+  'dependency_upgrade',
+  'code_review',
+  'codebase_qa',
+  'incident_response',
+  'ci_maintenance',
+  'feature_delivery',
+  'other',
+];
+
+export const DEVIN_USE_CASE_LABELS: Record<DevinUseCase, string> = {
+  migration: 'Migration (framework, language, cloud)',
+  refactor: 'Large-scale refactor / codemod',
+  test_coverage: 'Test coverage backfill',
+  bug_backlog: 'Bug and ticket backlog burn-down',
+  dependency_upgrade: 'Dependency and CVE remediation',
+  code_review: 'PR review and code standards',
+  codebase_qa: 'Codebase Q&A and onboarding (Wiki / Search)',
+  incident_response: 'Incident triage and on-call support',
+  ci_maintenance: 'CI, flaky tests and build maintenance',
+  feature_delivery: 'Parallel feature delivery',
+  other: 'Other',
 };
 
 export interface EvidenceItem {
   id: ID;
   sourceType: SourceType;
   sourceSystem: SourceSystem;
-  /** Human label for the source, e.g. "Q3 FY26 earnings call". */
+  /** Human label for where this came from, e.g. "Q3 FY26 earnings call". */
   sourceRef?: string;
   externalUrl?: string;
-  /** Idempotency key for ingestion; dedupes re-synced records. */
+  /** Idempotency key so re-ingesting the same record does not duplicate it. */
   externalId?: string;
+  /** The quote, or a factual summary tight enough to be quoted back. */
   verbatim: string;
   /** When we recorded it. */
   capturedAt: string;
-  /** When the underlying thing was true. Drives staleness, not capturedAt. */
+  /** When the underlying fact was true. Staleness is measured from this. */
   asOf: string;
-  /** Shared in confidence. Constrains what generated outreach may repeat. */
+  /** Shared in confidence: never repeat it in generated outreach. */
   confidential: boolean;
   stakeholderId?: ID;
-  /** Strategic qualification category (set by auto-seeding). */
   evidenceCategory?: EvidenceCategory;
-  /** Specific signal type, e.g. "software_engineer_headcount". */
+  /** Narrow signal name, e.g. "software_engineer_headcount". */
   signalType?: string;
-  /** Why this evidence matters for account prioritisation. */
   whyItMatters?: string;
-  /** What this means for Factory specifically. */
-  implicationForFactory?: string;
-  /** The next question to ask to validate or deepen this finding. */
+  /** What this implies for a Devin deployment specifically. */
+  implicationForDevin?: string;
   nextDiscoveryQuestion?: string;
-  /** Seller-confirmed status: FACT, HYPOTHESIS, or undefined (unmarked). */
+  /** Seller-confirmed status. Undefined means nobody has reviewed it yet. */
   status?: ClaimStatus;
 }
 
@@ -125,22 +185,24 @@ export interface EvidenceItem {
 
 export type ClaimStatus = 'FACT' | 'HYPOTHESIS' | 'UNKNOWN';
 
+export const CLAIM_STATUSES: ClaimStatus[] = ['FACT', 'HYPOTHESIS', 'UNKNOWN'];
+
 export type ClaimCategory =
+  | 'engineering_scale'
+  | 'devin_fit'
+  | 'urgency'
+  | 'right_to_win'
   | 'why_matters'
   | 'why_now'
   | 'trigger'
   | 'business_init'
   | 'tech_init'
   | 'problem'
-  | 'value'
-  | 'engineering_scale'
-  | 'factory_fit'
-  | 'urgency'
-  | 'right_to_win';
+  | 'value';
 
 export const CLAIM_CATEGORIES: ClaimCategory[] = [
   'engineering_scale',
-  'factory_fit',
+  'devin_fit',
   'urgency',
   'right_to_win',
   'why_matters',
@@ -154,7 +216,7 @@ export const CLAIM_CATEGORIES: ClaimCategory[] = [
 
 export const CLAIM_CATEGORY_LABELS: Record<ClaimCategory, string> = {
   engineering_scale: 'Engineering Scale',
-  factory_fit: 'Factory Use-Case Fit',
+  devin_fit: 'Devin Use-Case Fit',
   urgency: 'Urgency / Trigger',
   right_to_win: 'Right to Win',
   why_matters: 'Why this account matters',
@@ -166,13 +228,22 @@ export const CLAIM_CATEGORY_LABELS: Record<ClaimCategory, string> = {
   value: 'Value at stake',
 };
 
+/** The four category claims double as the qualification ratings on the thesis. */
+export const RATING_CLAIM_CATEGORIES: ClaimCategory[] = [
+  'engineering_scale',
+  'devin_fit',
+  'urgency',
+  'right_to_win',
+];
+
 export interface Claim {
   id: ID;
   text: string;
   status: ClaimStatus;
   category: ClaimCategory;
+  /** Evidence this claim rests on. A FACT needs at least one verifiable item. */
   evidenceIds: ID[];
-  /** Set when a newer claim replaces this one; preserves strategy history. */
+  /** Set when a newer claim replaces this one, so strategy history survives. */
   supersedesClaimId?: ID;
   asOf: string;
   reviewedAt?: string;
@@ -202,16 +273,18 @@ export interface ProofPoint {
   capability: string;
   claim: string;
   sourceUrl?: string;
-  /** Model-drafted proof points start false and render as UNVERIFIED. */
+  /** Drafted proof points start unverified and render as such. */
   verified: boolean;
 }
 
 export interface Wedge {
   id: ID;
   useCase: string;
+  devinUseCase: DevinUseCase;
   businessProblem: string;
   technicalProblem: string;
-  whyFactory: string;
+  /** Why an autonomous engineer beats hiring, offshoring or an IDE copilot. */
+  whyDevin: string;
   likelyOwnerRole: string;
   sponsorRole: string;
   evidenceIds: ID[];
@@ -253,12 +326,23 @@ export const BUYER_ROLE_LABELS: Record<BuyerRole, string> = {
   champion: 'Champion',
   technical_decision_maker: 'Technical Decision Maker',
   evaluator: 'Evaluator',
-  user: 'User',
+  user: 'User (engineer)',
   security_procurement: 'Security / Procurement',
   potential_detractor: 'Potential Detractor',
 };
 
-/** The seller's subjective read. Compare against the computed champion tier. */
+export const BUYER_ROLE_HINTS: Record<BuyerRole, string> = {
+  economic_buyer: 'Owns the budget line the platform seat count comes out of.',
+  executive_sponsor: 'CTO / VP Eng who has to say the strategy out loud.',
+  champion: 'Sells for you when you are not in the room.',
+  technical_decision_maker: 'Platform or DevEx lead who owns the toolchain.',
+  evaluator: 'Runs the pilot and scores the sessions.',
+  user: 'Engineers whose tickets Devin picks up.',
+  security_procurement: 'Reviews code access, SOC 2, data residency, VPC.',
+  potential_detractor: 'Believes agents are a threat, or owns a rival bet.',
+};
+
+/** The seller's read on a person, kept separate from the computed tier. */
 export type Posture =
   | 'unknown'
   | 'detractor'
@@ -287,24 +371,16 @@ export const POSTURE_LABELS: Record<Posture, string> = {
 
 export type Rating = 1 | 2 | 3 | 4 | 5;
 
-export const RATING_LABELS: Record<Rating, string> = {
-  1: 'Low',
-  2: 'Below average',
-  3: 'Average',
-  4: 'Above average',
-  5: 'High',
-};
+export const RATINGS: Rating[] = [1, 2, 3, 4, 5];
 
 export interface Stakeholder {
   id: ID;
   name: string;
   role: string;
   businessUnit?: string;
-  /** Join key for future Gmail/Calendar identity resolution. */
   emails: string[];
-  /** Join key for future LinkedIn matching. */
   linkedinUrl?: string;
-  /** People occupy several roles; an Economic Buyer is often also a Detractor. */
+  /** People hold several roles at once; an Economic Buyer is often a Detractor. */
   mapRoles: BuyerRole[];
   priorities: string[];
   relevance?: string;
@@ -314,7 +390,6 @@ export interface Stakeholder {
   accessPath?: string;
   whatToLearn: string[];
   lastContactAt?: string;
-  /** Which system asserted lastContactAt, so ingestion can own it later. */
   lastContactSource?: SourceSystem;
   introducedByStakeholderId?: ID;
   createdAt: string;
@@ -350,8 +425,23 @@ export const CHAMPION_SIGNAL_LABELS: Record<ChampionSignalType, string> = {
   introduces_sideways: 'Introduces me sideways',
   introduces_upward: 'Introduces me upward',
   gives_access_to_dm: 'Gives access to decision makers',
-  has_personal_motivation: 'Has personal / business motivation',
-  advocates_when_absent: 'Advocates when I am not present',
+  has_personal_motivation: 'Has personal or business motivation',
+  advocates_when_absent: 'Advocates when I am not in the room',
+};
+
+export const CHAMPION_SIGNAL_TESTS: Record<ChampionSignalType, string> = {
+  shares_nonpublic_info:
+    'Ask what the internal agent strategy is and who else is being evaluated.',
+  explains_politics: 'Ask who has to agree before a platform tool gets funded.',
+  shapes_use_case:
+    'Ask them to pick the first repo and the first ticket queue for the pilot.',
+  introduces_sideways: 'Ask for an intro to a peer team lead with the same backlog.',
+  introduces_upward: 'Ask for 20 minutes with their VP to review the pilot scope.',
+  gives_access_to_dm: 'Ask who signs and request a working session with them.',
+  has_personal_motivation:
+    'Ask what a successful agent rollout would mean for their own roadmap.',
+  advocates_when_absent:
+    'Give them a one-pager and ask them to run it in a meeting you are not in.',
 };
 
 export type ChampionTier =
@@ -360,12 +450,19 @@ export type ChampionTier =
   | 'Potential Champion'
   | 'Validated Champion';
 
+export const CHAMPION_TIERS: ChampionTier[] = [
+  'Contact',
+  'Coach',
+  'Potential Champion',
+  'Validated Champion',
+];
+
 export interface ChampionSignal {
   id: ID;
   stakeholderId: ID;
   signalType: ChampionSignalType;
   observed: boolean;
-  /** Required when observed. An unevidenced signal counts as UNKNOWN. */
+  /** Required when observed. An unevidenced signal does not count. */
   evidenceId?: ID;
   observedAt?: string;
   note?: string;
@@ -375,19 +472,6 @@ export interface ChampionSignal {
 
 export type Horizon = 'this_week' | 'next_2_weeks' | 'next_30_days';
 
-export type Channel =
-  | 'email'
-  | 'linkedin'
-  | 'call'
-  | 'warm_intro'
-  | 'partner_si'
-  | 'exec_outreach'
-  | 'technical_session'
-  | 'event'
-  | 'other';
-
-export type ActionStatus = 'open' | 'done' | 'dropped';
-
 export const HORIZONS: Horizon[] = ['this_week', 'next_2_weeks', 'next_30_days'];
 
 export const HORIZON_LABELS: Record<Horizon, string> = {
@@ -396,38 +480,27 @@ export const HORIZON_LABELS: Record<Horizon, string> = {
   next_30_days: 'Next 30 days',
 };
 
-// ─── Deal stage ──────────────────────────────────────────────────────────────
-
-export type DealStage = 'discovery' | 'evaluation' | 'negotiation';
-
-export const DEAL_STAGES: DealStage[] = ['discovery', 'evaluation', 'negotiation'];
-
-export const DEAL_STAGE_LABELS: Record<DealStage, string> = {
-  discovery: 'Discovery',
-  evaluation: 'Evaluation',
-  negotiation: 'Negotiation',
-};
-
-/**
- * Infers the deal stage from the account state — not manually set.
- * - Discovery: no claims yet (thesis not generated)
- * - Evaluation: claims exist but no validated wedges
- * - Negotiation: at least one validated wedge exists
- */
-export function inferDealStage(aggregate: AccountAggregate): DealStage {
-  if (aggregate.wedges.some((w) => w.status === 'validated')) return 'negotiation';
-  if (aggregate.claims.length > 0) return 'evaluation';
-  return 'discovery';
-}
+export type Channel =
+  | 'email'
+  | 'linkedin'
+  | 'call'
+  | 'warm_intro'
+  | 'exec_outreach'
+  | 'technical_session'
+  | 'pilot_session'
+  | 'partner_si'
+  | 'event'
+  | 'other';
 
 export const CHANNELS: Channel[] = [
   'email',
   'linkedin',
   'call',
   'warm_intro',
-  'partner_si',
   'exec_outreach',
   'technical_session',
+  'pilot_session',
+  'partner_si',
   'event',
   'other',
 ];
@@ -437,16 +510,19 @@ export const CHANNEL_LABELS: Record<Channel, string> = {
   linkedin: 'LinkedIn',
   call: 'Call',
   warm_intro: 'Warm intro',
-  partner_si: 'Partner / SI',
   exec_outreach: 'Exec outreach',
   technical_session: 'Technical session',
+  pilot_session: 'Live Devin session on their repo',
+  partner_si: 'Partner / SI',
   event: 'Event',
   other: 'Other',
 };
 
+export type ActionStatus = 'open' | 'done' | 'dropped';
+
 /**
- * One entity serves both the 30-day plan (bucketed by horizon) and Next Best
- * Action (top-ranked slice), so the two views can never disagree.
+ * One entity backs both the 30-day plan and the Next Best Action, so the two
+ * views can never disagree about what is outstanding.
  */
 export interface Action {
   id: ID;
@@ -457,17 +533,34 @@ export interface Action {
   messageOrAction: string;
   whyThisPersonNow: string;
   desiredOutcome: string;
-  dependencyActionId?: ID;
-  ifSuccess?: string;
-  ifFail?: string;
   horizon: Horizon;
   status: ActionStatus;
   dueAt?: string;
   completedAt?: string;
   outcomeNote?: string;
-  /** Which UNKNOWNs this action is meant to resolve. Feeds NBA scoring. */
+  /** Which UNKNOWNs this action is meant to close. Feeds NBA scoring. */
   resolvesClaimIds: ID[];
   createdAt: string;
+}
+
+// ─── Deal stage ──────────────────────────────────────────────────────────────
+
+export type DealStage = 'discovery' | 'evaluation' | 'negotiation';
+
+export const DEAL_STAGE_LABELS: Record<DealStage, string> = {
+  discovery: 'Discovery',
+  evaluation: 'Evaluation',
+  negotiation: 'Negotiation',
+};
+
+/**
+ * Derived from account state rather than set by hand, so the stage cannot drift
+ * away from what the account actually contains.
+ */
+export function inferDealStage(aggregate: AccountAggregate): DealStage {
+  if (aggregate.wedges.some((w) => w.status === 'validated')) return 'negotiation';
+  if (aggregate.claims.length > 0) return 'evaluation';
+  return 'discovery';
 }
 
 // ─── Change log ──────────────────────────────────────────────────────────────
@@ -475,32 +568,40 @@ export interface Action {
 export type ChangeType =
   | 'account_created'
   | 'account_updated'
+  | 'account_seeded'
   | 'evidence_added'
+  | 'evidence_updated'
   | 'evidence_removed'
   | 'evidence_status_changed'
   | 'claim_added'
-  | 'claim_status_changed'
-  | 'claim_superseded'
+  | 'claim_updated'
+  | 'claim_removed'
+  | 'claim_demoted'
   | 'wedge_added'
+  | 'wedge_updated'
   | 'wedge_disqualified'
   | 'stakeholder_added'
   | 'stakeholder_updated'
-  | 'posture_changed'
+  | 'stakeholder_removed'
   | 'signal_recorded'
+  | 'signal_removed'
   | 'champion_tier_changed'
   | 'action_added'
-  | 'action_completed'
-  | 'thesis_regenerated';
+  | 'action_updated'
+  | 'action_removed'
+  | 'thesis_generated';
 
 export interface ChangeEvent {
   id: ID;
   at: string;
   type: ChangeType;
-  /** e.g. "claim:abc123" */
+  /** e.g. "claim:9f2c". */
   entityRef?: string;
   summary: string;
   reason?: string;
 }
+
+export const EVENTS_CAP = 200;
 
 // ─── Aggregate ───────────────────────────────────────────────────────────────
 
@@ -512,12 +613,9 @@ export interface Account {
   updatedAt: string;
 }
 
-/** Everything for one account, stored as a single blob. */
+/** Everything about one account, stored as a single blob. */
 export interface AccountAggregate {
-  /**
-   * Monotonic write counter, for display and debugging. Concurrency itself is
-   * enforced by ETag compare-and-swap in the storage layer, not by this field.
-   */
+  /** Monotonic write counter. Clients echo it back as `If-Match: "rev-N"`. */
   rev: number;
   account: Account;
   evidence: EvidenceItem[];
@@ -527,26 +625,31 @@ export interface AccountAggregate {
   signals: ChampionSignal[];
   actions: Action[];
   events: ChangeEvent[];
-  /** Narrative paragraph explaining why this account matters, generated by the thesis generator or seeder. */
+  /** Narrative answer to "why does this account matter". */
   whyItMatters?: string;
+  /** Set while a seed run is in flight so the UI can keep polling. */
+  seedStatus?: 'running' | 'complete' | 'failed';
+  seedError?: string;
 }
 
-/** Lightweight portfolio row, derived from the aggregate. */
+/** Portfolio row, derived from the aggregate on every write. */
 export interface AccountIndexEntry {
   id: ID;
   companyName: string;
+  domain?: string;
   updatedAt: string;
   evidenceCount: number;
   factCount: number;
   unknownCount: number;
   stakeholderCount: number;
   validatedChampions: number;
+  validatedWedges: number;
   openActions: number;
   nextActionDueAt?: string;
+  dealStage: DealStage;
+  seedStatus?: 'running' | 'complete' | 'failed';
   needsAttention: boolean;
 }
-
-export const EVENTS_CAP = 200;
 
 export function emptyAggregate(account: Account): AccountAggregate {
   return {

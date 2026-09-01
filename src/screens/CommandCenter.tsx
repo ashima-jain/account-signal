@@ -1,23 +1,24 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { api } from '../api';
-import type { AccountIndexEntry } from '../domain/types';
-import { ErrorBanner, EmptyState, Spinner } from '../components/Feedback';
-import { Chip } from '../components/Chips';
-import { ageLabel } from '../lib/format';
+import { messageOf } from '../useAccount';
+import { Empty, Field } from '../components/ui';
+import { formatDate } from '../format';
+import { DEAL_STAGE_LABELS, type AccountIndexEntry } from '../domain/types';
 
 export default function CommandCenter() {
   const [accounts, setAccounts] = useState<AccountIndexEntry[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [companyName, setCompanyName] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [seeding, setSeeding] = useState<string | null>(null);
+  const [domain, setDomain] = useState('');
+  const [creating, setCreating] = useState(false);
+  const navigate = useNavigate();
 
   const load = useCallback(async () => {
     try {
       setAccounts(await api.listAccounts());
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load accounts.');
+      setError(messageOf(err));
     }
   }, []);
 
@@ -25,127 +26,144 @@ export default function CommandCenter() {
     void load();
   }, [load]);
 
-  async function create(event: React.FormEvent) {
+  async function addAccount(event: React.FormEvent) {
     event.preventDefault();
-    const name = companyName.trim();
-    if (!name) return;
-
-    setBusy(true);
+    if (!companyName.trim()) return;
+    setCreating(true);
     setError(null);
     try {
-      const result = await api.createAccount({ companyName: name });
-      setCompanyName('');
-      await load();
-
-      // Auto-seed: research the company and populate evidence, stakeholders, wedges.
-      setSeeding(name);
-      try {
-        await api.seedAccount(result.aggregate.account.id, result.aggregate.rev);
-        await load();
-      } catch (seedErr) {
-        // The seed call may have timed out (504) but the server often
-        // completes the work anyway. Poll the account to check.
-        const accountId = result.aggregate.account.id;
-        let seeded = false;
-        for (let attempt = 0; attempt < 8; attempt++) {
-          await new Promise((r) => setTimeout(r, 3000));
-          try {
-            const updated = await api.getAccount(accountId);
-            if (updated.evidence.length > 0) {
-              seeded = true;
-              await load();
-              break;
-            }
-          } catch {
-            // Account fetch failed — keep polling.
-          }
-        }
-        if (!seeded) {
-          setError(
-            `Account created for ${name}, but auto-research failed: ${seedErr instanceof Error ? seedErr.message : 'unknown error'}. You can add evidence manually.`
-          );
-        }
-      } finally {
-        setSeeding(null);
-      }
+      const created = await api.createAccount(companyName.trim(), domain.trim() || undefined);
+      // Research is slow and may outlive the request. The account exists either
+      // way, so the seed is left running and the account page polls for it.
+      void api.seed(created.account.id).catch(() => undefined);
+      navigate(`/accounts/${created.account.id}`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not create the account.');
-    } finally {
-      setBusy(false);
+      setError(messageOf(err));
+      setCreating(false);
     }
   }
 
+  const needsAttention = accounts?.filter((a) => a.needsAttention).length ?? 0;
+
   return (
-    <section className="screen">
-      <div className="screen-head">
-        <h1>Accounts</h1>
-        <form className="inline-form" onSubmit={create}>
-          <input
-            value={companyName}
-            onChange={(e) => setCompanyName(e.target.value)}
-            placeholder="Company name"
-            aria-label="Company name"
-          />
-          <button type="submit" disabled={busy || !!seeding || !companyName.trim()}>
-            {busy ? 'Adding…' : 'Add account'}
+    <div className="shell">
+      <div className="topbar">
+        <div>
+          <h1 className="brand">
+            Account Signal<span>evidence-first account execution for Devin</span>
+          </h1>
+          <p className="muted" style={{ marginTop: 6 }}>
+            Research is the model&apos;s job. Judgment is the code&apos;s job. Nothing here is a
+            fact until something you can point at says so.
+          </p>
+        </div>
+      </div>
+
+      {error ? <div className="banner error">{error}</div> : null}
+
+      <div className="card">
+        <h2>Add an account</h2>
+        <p className="dim">
+          Claude researches the company across engineering scale, Devin use-case fit, urgency and
+          right to win, then fills the ledger with what it can cite.
+        </p>
+        <form onSubmit={addAccount} style={{ marginTop: 10 }}>
+          <div className="grid two">
+            <Field label="Company">
+              <input
+                value={companyName}
+                onChange={(e) => setCompanyName(e.target.value)}
+                placeholder="Shopify"
+                autoFocus
+              />
+            </Field>
+            <Field label="Domain (optional)">
+              <input
+                value={domain}
+                onChange={(e) => setDomain(e.target.value)}
+                placeholder="shopify.com"
+              />
+            </Field>
+          </div>
+          <button className="primary" disabled={creating || !companyName.trim()}>
+            {creating ? 'Researching…' : 'Research account'}
           </button>
         </form>
       </div>
 
-      <ErrorBanner error={error} onDismiss={() => setError(null)} />
+      <div className="grid four" style={{ marginTop: 16 }}>
+        <Metric label="Accounts" value={accounts?.length ?? 0} />
+        <Metric
+          label="Validated wedges"
+          value={sum(accounts, (a) => a.validatedWedges)}
+        />
+        <Metric
+          label="Validated champions"
+          value={sum(accounts, (a) => a.validatedChampions)}
+        />
+        <Metric label="Need attention" value={needsAttention} />
+      </div>
 
-      {seeding && (
-        <div className="seeding-banner">
-          <Spinner label={`Researching ${seeding}… finding evidence, stakeholders, and wedges`} />
-        </div>
-      )}
-
-      {accounts === null ? (
-        <Spinner label="Loading accounts" />
-      ) : accounts.length === 0 ? (
-        <EmptyState title="No accounts yet.">
-          <p>
-            Add a company above. The first thing to do inside an account is record evidence:
-            everything else in the system has to cite it.
-          </p>
-        </EmptyState>
-      ) : (
-        <ul className="account-list">
-          {accounts.map((account) => (
-            <li key={account.id} className={account.needsAttention ? 'needs-attention' : ''}>
-              <Link to={`/accounts/${account.id}`} className="account-card">
-                <div className="account-card-head">
-                  <h2>{account.companyName}</h2>
-                  {account.needsAttention && <Chip label="Needs attention" tone="warn" />}
-                </div>
-                <dl className="metrics">
-                  <div>
-                    <dt>Evidence</dt>
-                    <dd>{account.evidenceCount}</dd>
-                  </div>
-                  <div>
-                    <dt>Facts</dt>
-                    <dd>{account.factCount}</dd>
-                  </div>
-                  <div>
-                    <dt>Unknowns</dt>
-                    <dd>{account.unknownCount}</dd>
-                  </div>
-                  <div>
-                    <dt>People</dt>
-                    <dd>{account.stakeholderCount}</dd>
-                  </div>
-                  <div>
-                    <dt>Open actions</dt>
-                    <dd>{account.openActions}</dd>
-                  </div>
-                </dl>
-                <p className="account-card-foot">Updated {ageLabel(account.updatedAt)}</p>
-              </Link>
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
+      <div className="card" style={{ marginTop: 16 }}>
+        <h2>Portfolio</h2>
+        {accounts === null ? (
+          <p className="muted">Loading…</p>
+        ) : accounts.length === 0 ? (
+          <Empty>No accounts yet. Add one above.</Empty>
+        ) : (
+          <table>
+            <thead>
+              <tr>
+                <th>Account</th>
+                <th>Stage</th>
+                <th>Evidence</th>
+                <th>Facts</th>
+                <th>Unknowns</th>
+                <th>Champions</th>
+                <th>Wedges</th>
+                <th>Open actions</th>
+                <th>Updated</th>
+              </tr>
+            </thead>
+            <tbody>
+              {accounts.map((account) => (
+                <tr key={account.id}>
+                  <td>
+                    <Link to={`/accounts/${account.id}`}>{account.companyName}</Link>
+                    {account.needsAttention ? (
+                      <div className="dim">Needs attention</div>
+                    ) : null}
+                  </td>
+                  <td>{DEAL_STAGE_LABELS[account.dealStage]}</td>
+                  <td>{account.evidenceCount}</td>
+                  <td>{account.factCount}</td>
+                  <td>{account.unknownCount}</td>
+                  <td>{account.validatedChampions}</td>
+                  <td>{account.validatedWedges}</td>
+                  <td>{account.openActions}</td>
+                  <td className="dim">{formatDate(account.updatedAt)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
   );
+}
+
+function Metric({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="metric">
+      <div className="value">{value}</div>
+      <div className="label">{label}</div>
+    </div>
+  );
+}
+
+function sum(
+  accounts: AccountIndexEntry[] | null,
+  pick: (entry: AccountIndexEntry) => number
+): number {
+  return (accounts ?? []).reduce((total, entry) => total + pick(entry), 0);
 }

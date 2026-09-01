@@ -1,299 +1,294 @@
-/**
- * Tests for the Next Best Action engine.
- *
- * The NBA is deterministic: the same account state always produces the same
- * candidates in the same order. If these pass, the system never confabulates
- * a "next step" that the evidence does not justify.
- *
- * Scoring uses deal-stage-weighted tiers (Critical / High / Medium / Low)
- * instead of fixed numeric scores. The same candidate changes priority
- * depending on where the deal is.
- */
-
 import { describe, expect, it } from 'vitest';
-import { nextBestAction, nextBestActions } from './nba';
-import type {
-  AccountAggregate,
-  Account,
-  Action,
-  ChampionSignal,
-  Claim,
-  EvidenceItem,
-  Stakeholder,
-  Wedge,
+import { nextBestAction, nextBestActions, type NbaTier } from './nba';
+import {
+  emptyAggregate,
+  inferDealStage,
+  type AccountAggregate,
+  type Action,
+  type Claim,
+  type ChampionSignal,
+  type EvidenceItem,
+  type Stakeholder,
+  type Wedge,
 } from './types';
 
-function makeAccount(overrides: Partial<Account> = {}): Account {
+const NOW = new Date('2026-06-01T00:00:00.000Z');
+
+function account(overrides: Partial<AccountAggregate> = {}): AccountAggregate {
   return {
-    id: 'acc-1',
-    companyName: 'Test Co',
-    createdAt: '2026-01-01T00:00:00Z',
-    updatedAt: '2026-01-01T00:00:00Z',
+    ...emptyAggregate({
+      id: 'a1',
+      companyName: 'Northwind Logistics',
+      createdAt: '2026-05-01',
+      updatedAt: '2026-05-01',
+    }),
     ...overrides,
   };
 }
 
-function makeAggregate(parts: Partial<AccountAggregate> = {}): AccountAggregate {
-  return {
-    rev: 0,
-    account: makeAccount(),
-    evidence: [],
-    claims: [],
-    wedges: [],
-    stakeholders: [],
-    signals: [],
-    actions: [],
-    events: [],
-    ...parts,
-  };
-}
-
-function makeEvidence(id: string): EvidenceItem {
+function evidence(id: string, asOf = '2026-05-20'): EvidenceItem {
   return {
     id,
-    sourceType: 'conversation',
-    sourceSystem: 'manual',
-    verbatim: 'Something was said.',
-    capturedAt: '2026-01-01T00:00:00Z',
-    asOf: '2026-01-01T00:00:00Z',
+    sourceType: 'news',
+    sourceSystem: 'web_research',
+    verbatim: `verbatim ${id}`,
+    capturedAt: asOf,
+    asOf,
     confidential: false,
   };
 }
 
-function makeClaim(overrides: Partial<Claim> = {}): Claim {
+function claim(overrides: Partial<Claim> = {}): Claim {
   return {
-    id: 'cl-1',
-    text: 'Some claim',
-    status: 'UNKNOWN',
-    category: 'why_now',
-    evidenceIds: [],
-    asOf: new Date().toISOString(),
-    createdAt: new Date().toISOString(),
+    id: 'c1',
+    text: 'They run 1,200 engineers across 4,000 repos',
+    status: 'FACT',
+    category: 'engineering_scale',
+    evidenceIds: ['e1'],
+    asOf: '2026-05-20',
+    createdAt: '2026-05-20',
     ...overrides,
   };
 }
 
-function makeStakeholder(overrides: Partial<Stakeholder> = {}): Stakeholder {
+function person(overrides: Partial<Stakeholder> = {}): Stakeholder {
   return {
-    id: 'st-1',
-    name: 'Test Person',
-    role: 'VP',
+    id: 's1',
+    name: 'Priya Raman',
+    role: 'VP Platform Engineering',
     emails: [],
     mapRoles: [],
     priorities: [],
-    influence: 3,
+    influence: 4,
     relationshipStrength: 3,
-    posture: 'unknown',
+    posture: 'neutral',
     whatToLearn: [],
-    createdAt: '2026-01-01T00:00:00Z',
+    createdAt: '2026-05-01',
     ...overrides,
   };
 }
 
-function makeWedge(overrides: Partial<Wedge> = {}): Wedge {
+function wedge(overrides: Partial<Wedge> = {}): Wedge {
   return {
-    id: 'wg-1',
-    useCase: 'Test wedge',
-    businessProblem: 'Problem',
-    technicalProblem: 'Tech problem',
-    whyFactory: 'Because',
-    likelyOwnerRole: 'Head of Eng',
-    sponsorRole: 'CTO',
-    evidenceIds: [],
-    discoveryQuestion: 'Why?',
+    id: 'w1',
+    useCase: 'Java 8 to 17 migration across payment services',
+    devinUseCase: 'migration',
+    businessProblem: 'Vendor support ends this year',
+    technicalProblem: '180 services still on Java 8',
+    whyDevin: 'Parallel sessions can grind through repo after repo',
+    likelyOwnerRole: 'Platform lead',
+    sponsorRole: 'VP Engineering',
+    evidenceIds: ['e1'],
+    discoveryQuestion: 'Which services are blocking the upgrade?',
     disqualifiers: [],
     proofPoints: [],
     status: 'candidate',
-    createdAt: '2026-01-01T00:00:00Z',
+    createdAt: '2026-05-01',
     ...overrides,
   };
 }
 
-describe('nextBestActions', () => {
-  it('suggests recording first evidence on a blank account (Critical in discovery)', () => {
-    const candidates = nextBestActions(makeAggregate());
-    expect(candidates[0].id).toBe('first-evidence');
-    expect(candidates[0].tier).toBe('critical');
-    expect(candidates[0].stage).toBe('discovery');
+function action(overrides: Partial<Action> = {}): Action {
+  return {
+    id: 'act1',
+    objective: 'Scope the pilot repo',
+    channel: 'call',
+    messageOrAction: 'Walk through the migration backlog',
+    whyThisPersonNow: 'They own the toolchain',
+    desiredOutcome: 'Agreed pilot scope',
+    horizon: 'this_week',
+    status: 'open',
+    resolvesClaimIds: [],
+    createdAt: '2026-05-20',
+    ...overrides,
+  };
+}
+
+/** Signals covering `count` types, each citing evidence that exists. */
+function signalsFor(stakeholderId: string, types: ChampionSignal['signalType'][]) {
+  return types.map((signalType, i) => ({
+    id: `sig-${stakeholderId}-${i}`,
+    stakeholderId,
+    signalType,
+    observed: true,
+    evidenceId: 'e1',
+  }));
+}
+
+function tierOf(candidates: ReturnType<typeof nextBestActions>, key: string): NbaTier | undefined {
+  return candidates.find((c) => c.key === key)?.tier;
+}
+
+describe('deal stage inference', () => {
+  it('is discovery with no claims', () => {
+    expect(inferDealStage(account())).toBe('discovery');
   });
 
-  it('suggests adding first stakeholder when evidence exists but no people (High in discovery)', () => {
-    const candidates = nextBestActions(
-      makeAggregate({ evidence: [makeEvidence('ev-1')] })
-    );
-    expect(candidates[0].id).toBe('first-stakeholder');
-    expect(candidates[0].tier).toBe('high');
+  it('is evaluation once claims exist', () => {
+    expect(inferDealStage(account({ claims: [claim()] }))).toBe('evaluation');
   });
 
-  it('suggests identifying economic buyer — Low in discovery, High in evaluation, Critical in negotiation', () => {
-    // Discovery stage (no claims)
-    const discoveryCandidates = nextBestActions(
-      makeAggregate({
-        evidence: [makeEvidence('ev-1')],
-        stakeholders: [makeStakeholder({ mapRoles: ['champion'] })],
-      })
-    );
-    const eb = discoveryCandidates.find((c) => c.id === 'identify-economic-buyer');
-    expect(eb).toBeDefined();
-    expect(eb!.tier).toBe('low');
-
-    // Evaluation stage (claims exist, no validated wedges)
-    const evalCandidates = nextBestActions(
-      makeAggregate({
-        evidence: [makeEvidence('ev-1')],
-        stakeholders: [makeStakeholder({ mapRoles: ['champion'] })],
-        claims: [makeClaim({ status: 'FACT', evidenceIds: ['ev-1'] })],
-      })
-    );
-    const ebEval = evalCandidates.find((c) => c.id === 'identify-economic-buyer');
-    expect(ebEval).toBeDefined();
-    expect(ebEval!.tier).toBe('high');
-
-    // Negotiation stage (validated wedge exists)
-    const negCandidates = nextBestActions(
-      makeAggregate({
-        evidence: [makeEvidence('ev-1')],
-        stakeholders: [makeStakeholder({ mapRoles: ['champion'] })],
-        claims: [makeClaim({ status: 'FACT', evidenceIds: ['ev-1'] })],
-        wedges: [makeWedge({ status: 'validated' })],
-      })
-    );
-    const ebNeg = negCandidates.find((c) => c.id === 'identify-economic-buyer');
-    expect(ebNeg).toBeDefined();
-    expect(ebNeg!.tier).toBe('critical');
-  });
-
-  it('does not suggest economic buyer when one exists', () => {
-    const candidates = nextBestActions(
-      makeAggregate({
-        evidence: [makeEvidence('ev-1')],
-        stakeholders: [makeStakeholder({ mapRoles: ['economic_buyer'] })],
-      })
-    );
-    expect(candidates.find((c) => c.id === 'identify-economic-buyer')).toBeUndefined();
-  });
-
-  it('suggests resolving UNKNOWN claims — Medium in discovery, High in evaluation', () => {
-    const unknown = makeClaim({ id: 'cl-u', status: 'UNKNOWN', text: 'Who owns the budget' });
-    // Discovery (UNKNOWN claim without other claims is still discovery since claims exist)
-    // Actually with claims, stage is evaluation
-    const candidates = nextBestActions(
-      makeAggregate({
-        evidence: [makeEvidence('ev-1')],
-        stakeholders: [makeStakeholder({ mapRoles: ['economic_buyer'] })],
-        claims: [unknown],
-      })
-    );
-    const unknownCandidate = candidates.find((c) => c.id === 'resolve-unknown-cl-u');
-    expect(unknownCandidate).toBeDefined();
-    expect(unknownCandidate!.tier).toBe('high'); // evaluation stage
-    expect(unknownCandidate!.claimId).toBe('cl-u');
-    expect(unknownCandidate!.stage).toBe('evaluation');
-  });
-
-  it('prioritises overdue actions as Critical in all stages', () => {
-    const overdueAction: Action = {
-      id: 'act-1',
-      stakeholderId: undefined,
-      wedgeId: undefined,
-      objective: 'Follow up on the proposal',
-      channel: 'email',
-      messageOrAction: 'Send the revised proposal',
-      whyThisPersonNow: 'They are waiting',
-      desiredOutcome: 'Proposal accepted',
-      horizon: 'this_week',
-      status: 'open',
-      dueAt: '2020-01-01T00:00:00Z',
-      resolvesClaimIds: [],
-      createdAt: '2026-01-01T00:00:00Z',
-    };
-    const candidates = nextBestActions(
-      makeAggregate({
-        evidence: [makeEvidence('ev-1')],
-        stakeholders: [makeStakeholder({ mapRoles: ['economic_buyer'] })],
-        actions: [overdueAction],
-      })
-    );
-    expect(candidates[0].tier).toBe('critical');
-    expect(candidates[0].id).toContain('overdue');
-  });
-
-  it('champion test is High in discovery, Critical in evaluation', () => {
-    // Discovery: no claims
-    const discoveryCandidates = nextBestActions(
-      makeAggregate({
-        evidence: [makeEvidence('ev-1')],
-        stakeholders: [makeStakeholder({ mapRoles: ['economic_buyer'] })],
-      })
-    );
-    const champTest = discoveryCandidates.find((c) => c.id.startsWith('champion-test'));
-    expect(champTest).toBeDefined();
-    expect(champTest!.tier).toBe('high');
-
-    // Evaluation: claims exist
-    const evalCandidates = nextBestActions(
-      makeAggregate({
-        evidence: [makeEvidence('ev-1')],
-        stakeholders: [makeStakeholder({ mapRoles: ['economic_buyer'] })],
-        claims: [makeClaim({ status: 'FACT', evidenceIds: ['ev-1'] })],
-      })
-    );
-    const champTestEval = evalCandidates.find((c) => c.id.startsWith('champion-test'));
-    expect(champTestEval).toBeDefined();
-    expect(champTestEval!.tier).toBe('critical');
-  });
-
-  it('returns empty for a fully covered account', () => {
-    const candidates = nextBestActions(
-      makeAggregate({
-        evidence: [makeEvidence('ev-1')],
-        stakeholders: [makeStakeholder({ mapRoles: ['economic_buyer'] })],
-        claims: [makeClaim({ status: 'FACT', evidenceIds: ['ev-1'] })],
-      })
-    );
-    // No unknowns, no overdue, no champion test pending, no stale, economic buyer exists
-    expect(candidates.filter((c) => !c.id.startsWith('champion-test'))).toHaveLength(0);
+  it('is negotiation once a wedge is validated', () => {
+    expect(
+      inferDealStage(
+        account({ claims: [claim()], wedges: [wedge({ status: 'validated' })] })
+      )
+    ).toBe('negotiation');
   });
 });
 
 describe('nextBestAction', () => {
-  it('returns the top candidate', () => {
-    const top = nextBestAction(makeAggregate());
-    expect(top).not.toBeNull();
-    expect(top!.id).toBe('first-evidence');
+  it('tells an empty account to do research first, and nothing else', () => {
+    const candidates = nextBestActions(account(), NOW);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].key).toBe('no_evidence');
+    expect(candidates[0].tier).toBe('Critical');
   });
 
-  it('returns null when there is nothing to do', () => {
-    // A fully validated champion with all claims as FACT and an economic buyer
-    const evidence = [makeEvidence('ev-1')];
-    const allSignalTypes: ChampionSignal['signalType'][] = [
-      'shares_nonpublic_info',
-      'explains_politics',
-      'shapes_use_case',
-      'introduces_sideways',
-      'introduces_upward',
-      'gives_access_to_dm',
-      'has_personal_motivation',
-      'advocates_when_absent',
-    ];
-    const signals: ChampionSignal[] = allSignalTypes.map((type, i) => ({
-      id: `sig-${i}`,
-      stakeholderId: 'st-1',
-      signalType: type,
-      observed: true,
-      evidenceId: 'ev-1',
-      observedAt: '2026-01-01T00:00:00Z',
-    }));
-    const top = nextBestAction(
-      makeAggregate({
-        evidence,
-        stakeholders: [makeStakeholder({ id: 'st-1', mapRoles: ['economic_buyer'] })],
-        claims: [makeClaim({ status: 'FACT', evidenceIds: ['ev-1'] })],
-        signals,
-      })
+  it('asks for a thesis when there is evidence but no claims', () => {
+    const top = nextBestAction(account({ evidence: [evidence('e1')] }), NOW);
+    expect(top?.key).toBe('no_thesis');
+  });
+
+  it('ranks Critical above High', () => {
+    const candidates = nextBestActions(
+      account({
+        evidence: [evidence('e1')],
+        claims: [claim({ id: 'c9', status: 'UNKNOWN', evidenceIds: [] })],
+      }),
+      NOW
     );
-    // All 8 signals evidenced, no unknowns, no overdue, no stale, economic buyer exists
-    // The only candidate would be a champion test, but all are evidenced
-    expect(top).toBeNull();
+    const scores = candidates.map((c) => c.score);
+    expect(scores).toEqual([...scores].sort((a, b) => b - a));
+    expect(candidates[0].tier).toBe('Critical');
+  });
+});
+
+describe('stage-dependent priority', () => {
+  const base = {
+    evidence: [evidence('e1')],
+    stakeholders: [person()],
+  };
+
+  it('treats a missing economic buyer as Low in discovery and Critical in negotiation', () => {
+    const discovery = nextBestActions(account(base), NOW);
+    expect(tierOf(discovery, 'no_economic_buyer')).toBe('Low');
+
+    const evaluation = nextBestActions(account({ ...base, claims: [claim()] }), NOW);
+    expect(tierOf(evaluation, 'no_economic_buyer')).toBe('High');
+
+    const negotiation = nextBestActions(
+      account({ ...base, claims: [claim()], wedges: [wedge({ status: 'validated' })] }),
+      NOW
+    );
+    expect(tierOf(negotiation, 'no_economic_buyer')).toBe('Critical');
+  });
+
+  it('escalates the champion test from High in discovery to Critical later', () => {
+    const withChampion = {
+      ...base,
+      stakeholders: [person({ mapRoles: ['champion'] })],
+    };
+    expect(tierOf(nextBestActions(account(withChampion), NOW), 'champion_test')).toBe('High');
+    expect(
+      tierOf(nextBestActions(account({ ...withChampion, claims: [claim()] }), NOW), 'champion_test')
+    ).toBe('Critical');
+  });
+
+  it('escalates stale-claim revalidation from Medium in evaluation to High in negotiation', () => {
+    const stale = {
+      evidence: [evidence('e1', '2026-01-01')],
+      claims: [claim({ asOf: '2026-01-01' })],
+      stakeholders: [person()],
+    };
+    expect(tierOf(nextBestActions(account(stale), NOW), 'stale_claims')).toBe('Medium');
+    expect(
+      tierOf(
+        nextBestActions(account({ ...stale, wedges: [wedge({ status: 'validated' })] }), NOW),
+        'stale_claims'
+      )
+    ).toBe('High');
+  });
+
+  it('escalates the security contact gap to Critical only in negotiation', () => {
+    expect(tierOf(nextBestActions(account(base), NOW), 'no_security_contact')).toBe('Low');
+    expect(
+      tierOf(
+        nextBestActions(
+          account({ ...base, claims: [claim()], wedges: [wedge({ status: 'validated' })] }),
+          NOW
+        ),
+        'no_security_contact'
+      )
+    ).toBe('Critical');
+  });
+});
+
+describe('individual rules', () => {
+  it('flags unknowns only while nothing is booked to resolve them', () => {
+    const unknown = claim({ id: 'c9', status: 'UNKNOWN', evidenceIds: [] });
+    const withUnknown = account({ evidence: [evidence('e1')], claims: [unknown] });
+    expect(tierOf(nextBestActions(withUnknown, NOW), 'unresolved_unknowns')).toBe('High');
+
+    const booked = account({
+      ...withUnknown,
+      actions: [action({ resolvesClaimIds: ['c9'] })],
+    });
+    expect(tierOf(nextBestActions(booked, NOW), 'unresolved_unknowns')).toBeUndefined();
+  });
+
+  it('names the cheapest next champion test in the suggestion', () => {
+    const state = account({
+      evidence: [evidence('e1')],
+      stakeholders: [person({ mapRoles: ['champion'] })],
+      signals: signalsFor('s1', ['explains_politics', 'shares_nonpublic_info']),
+    });
+    const candidate = nextBestActions(state, NOW).find((c) => c.key === 'champion_test');
+    expect(candidate?.why).toMatch(/Coach with 2 of 8/);
+    expect(candidate?.suggestedAction).toMatch(/shape the use case|Proving/);
+  });
+
+  it('stops asking for a champion once one is validated', () => {
+    const state = account({
+      evidence: [evidence('e1')],
+      stakeholders: [person({ mapRoles: ['champion'] })],
+      signals: signalsFor('s1', [
+        'explains_politics',
+        'shapes_use_case',
+        'advocates_when_absent',
+        'has_personal_motivation',
+      ]),
+    });
+    expect(tierOf(nextBestActions(state, NOW), 'champion_test')).toBeUndefined();
+  });
+
+  it('asks for a wedge when every wedge is disqualified', () => {
+    const state = account({
+      evidence: [evidence('e1')],
+      claims: [claim()],
+      wedges: [wedge({ status: 'disqualified', disqualifiedReason: 'No budget' })],
+    });
+    expect(tierOf(nextBestActions(state, NOW), 'no_wedge')).toBe('High');
+  });
+
+  it('flags overdue actions', () => {
+    const state = account({
+      evidence: [evidence('e1')],
+      claims: [claim()],
+      actions: [action({ dueAt: '2026-05-15' })],
+    });
+    const candidate = nextBestActions(state, NOW).find((c) => c.key === 'overdue_actions');
+    expect(candidate?.tier).toBe('High');
+    expect(candidate?.why).toMatch(/2026-05-15/);
+  });
+
+  it('pushes for proof of the right to win while it is unproven', () => {
+    const state = account({
+      evidence: [evidence('e1')],
+      claims: [
+        claim({ id: 'c2', category: 'right_to_win', status: 'HYPOTHESIS', evidenceIds: ['e1'] }),
+      ],
+    });
+    expect(tierOf(nextBestActions(state, NOW), 'right_to_win_unproven')).toBe('High');
   });
 });

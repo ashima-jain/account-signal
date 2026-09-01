@@ -1,289 +1,297 @@
-import { useMemo, useState } from 'react';
-import { api, type EvidenceInput } from '../api';
+import { useState } from 'react';
+import { api } from '../api';
+import { useAccount } from '../useAccount';
+import { Disclosure, Empty, Field, StatusBadge } from '../components/ui';
+import { formatDate } from '../format';
+import { citationCount, demotionsIfRemoved } from '../domain/claims';
 import {
-  SOURCE_TYPES,
-  SOURCE_TYPE_LABELS,
+  CLAIM_STATUSES,
   EVIDENCE_CATEGORIES,
   EVIDENCE_CATEGORY_LABELS,
-  type Claim,
+  EVIDENCE_CATEGORY_QUESTIONS,
+  SOURCE_SYSTEMS,
+  SOURCE_TYPES,
+  SOURCE_TYPE_LABELS,
+  isVerifiableSource,
+  type ClaimStatus,
+  type EvidenceCategory,
   type EvidenceItem,
+  type SourceSystem,
   type SourceType,
 } from '../domain/types';
-import { supportedStatus } from '../domain/claims';
-import { useAccount } from './AccountLayout';
-import { EmptyState } from '../components/Feedback';
-import { Chip, SourceChip } from '../components/Chips';
-import { ageLabel, formatDate, toDateInput } from '../lib/format';
-
-/**
- * Which FACTs would stop being facts if this evidence were removed. Computed
- * with the same function the server uses, so the warning cannot disagree with
- * what actually happens.
- */
-function demotionImpact(evidenceId: string, claims: Claim[], evidence: EvidenceItem[]): Claim[] {
-  const remaining = evidence.filter((e) => e.id !== evidenceId);
-  return claims.filter((claim) => {
-    if (claim.status !== 'FACT' || !claim.evidenceIds.includes(evidenceId)) return false;
-    const trimmed: Claim = {
-      ...claim,
-      evidenceIds: claim.evidenceIds.filter((id) => id !== evidenceId),
-    };
-    return supportedStatus(trimmed, remaining) !== 'FACT';
-  });
-}
-
-function renderEvidenceItem(
-  item: EvidenceItem,
-  cited: number,
-  remove: (item: EvidenceItem) => void,
-) {
-  return (
-    <li key={item.id}>
-      <div className="evidence-meta">
-        <SourceChip sourceType={item.sourceType} />
-        {item.signalType && <Chip label={item.signalType} tone="info" />}
-        {item.confidential && <Chip label="Confidential" tone="warn" />}
-        {cited === 0 ? (
-          <Chip label="Not cited" tone="neutral" />
-        ) : (
-          <Chip label={`Cited by ${cited}`} tone="good" />
-        )}
-        <span className="subtle">
-          {item.sourceRef ? `${item.sourceRef} · ` : ''}
-          true as of {formatDate(item.asOf)} ({ageLabel(item.asOf)})
-        </span>
-      </div>
-
-      <blockquote>{item.verbatim}</blockquote>
-
-      {item.whyItMatters && (
-        <p className="evidence-analysis"><strong>Why it matters:</strong> {item.whyItMatters}</p>
-      )}
-      {item.implicationForFactory && (
-        <p className="evidence-analysis"><strong>For Factory:</strong> {item.implicationForFactory}</p>
-      )}
-      {item.nextDiscoveryQuestion && (
-        <p className="evidence-analysis"><strong>Next question:</strong> {item.nextDiscoveryQuestion}</p>
-      )}
-
-      <div className="evidence-foot">
-        {item.externalUrl && (
-          <a href={item.externalUrl} target="_blank" rel="noreferrer">
-            Open source
-          </a>
-        )}
-        <span className="subtle">via {item.sourceSystem}</span>
-        <button type="button" className="danger-quiet" onClick={() => remove(item)}>
-          Remove
-        </button>
-      </div>
-    </li>
-  );
-}
-
-const EMPTY_FORM = {
-  sourceType: 'conversation' as SourceType,
-  sourceRef: '',
-  verbatim: '',
-  asOf: toDateInput(new Date().toISOString()),
-  externalUrl: '',
-  confidential: false,
-};
 
 export default function EvidenceLedger() {
-  const { aggregate, apply, setError } = useAccount();
-  const [form, setForm] = useState(EMPTY_FORM);
-  const [busy, setBusy] = useState(false);
-  const [filter, setFilter] = useState<SourceType | 'all'>('all');
+  const { aggregate } = useAccount();
+  const [category, setCategory] = useState<EvidenceCategory | 'all'>('all');
 
-  const sorted = useMemo(
-    () => [...aggregate.evidence].sort((a, b) => b.asOf.localeCompare(a.asOf)),
-    [aggregate.evidence]
-  );
-
-  const visible = filter === 'all' ? sorted : sorted.filter((e) => e.sourceType === filter);
-
-  const citationCounts = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const claim of aggregate.claims) {
-      for (const id of claim.evidenceIds) counts.set(id, (counts.get(id) ?? 0) + 1);
-    }
-    return counts;
-  }, [aggregate.claims]);
-
-  async function add(event: React.FormEvent) {
-    event.preventDefault();
-    if (!form.verbatim.trim()) return;
-
-    const input: EvidenceInput = {
-      sourceType: form.sourceType,
-      verbatim: form.verbatim.trim(),
-      sourceRef: form.sourceRef.trim() || undefined,
-      externalUrl: form.externalUrl.trim() || undefined,
-      asOf: form.asOf ? new Date(form.asOf).toISOString() : undefined,
-      confidential: form.confidential,
-    };
-
-    setBusy(true);
-    setError(null);
-    try {
-      apply(await api.addEvidence(aggregate.account.id, aggregate.rev, input));
-      setForm(EMPTY_FORM);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not save the evidence.');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function remove(item: EvidenceItem) {
-    const affected = demotionImpact(item.id, aggregate.claims, aggregate.evidence);
-    const warning =
-      affected.length > 0
-        ? `\n\nThis will stop ${affected.length} fact${affected.length === 1 ? '' : 's'} being a fact:\n` +
-          affected.map((c) => `  • ${c.text}`).join('\n')
-        : '';
-
-    if (!window.confirm(`Remove this evidence?${warning}`)) return;
-
-    setError(null);
-    try {
-      apply(await api.deleteEvidence(aggregate.account.id, item.id, aggregate.rev));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not remove the evidence.');
-    }
-  }
+  const visible =
+    category === 'all'
+      ? aggregate.evidence
+      : aggregate.evidence.filter((e) => e.evidenceCategory === category);
 
   return (
-    <div className="panel-stack">
-      <form className="card form-grid" onSubmit={add}>
-        <h2>Record evidence</h2>
-        <p className="subtle">
-          Paste what was actually said or written. Every fact in this account has to point back
-          to one of these, so record the words, not your summary of them.
-        </p>
-
-        <label>
-          <span>Source type</span>
+    <>
+      <div className="card">
+        <div className="row between">
+          <div>
+            <h2>Evidence ledger</h2>
+            <p className="dim">
+              Everything downstream — claims, wedges, champion signals — points back at a row in
+              here. Delete a row and whatever rested on it is demoted.
+            </p>
+          </div>
           <select
-            value={form.sourceType}
-            onChange={(e) => setForm({ ...form, sourceType: e.target.value as SourceType })}
+            style={{ width: 'auto' }}
+            value={category}
+            onChange={(e) => setCategory(e.target.value as EvidenceCategory | 'all')}
           >
-            {SOURCE_TYPES.map((type) => (
-              <option key={type} value={type}>
-                {SOURCE_TYPE_LABELS[type]}
+            <option value="all">All criteria</option>
+            {EVIDENCE_CATEGORIES.map((c) => (
+              <option key={c} value={c}>
+                {EVIDENCE_CATEGORY_LABELS[c]}
               </option>
             ))}
           </select>
-        </label>
+        </div>
+        {category !== 'all' ? (
+          <p className="muted" style={{ marginTop: 8 }}>
+            {EVIDENCE_CATEGORY_QUESTIONS[category]}
+          </p>
+        ) : null}
+      </div>
 
-        <label>
-          <span>Source reference</span>
-          <input
-            value={form.sourceRef}
-            onChange={(e) => setForm({ ...form, sourceRef: e.target.value })}
-            placeholder="Q3 FY26 earnings call"
-          />
-        </label>
+      {visible.length === 0 ? (
+        <Empty>Nothing recorded under this criterion yet.</Empty>
+      ) : (
+        visible.map((item) => <EvidenceRow key={item.id} item={item} />)
+      )}
 
-        <label className="span-2">
-          <span>What was said</span>
-          <textarea
-            value={form.verbatim}
-            onChange={(e) => setForm({ ...form, verbatim: e.target.value })}
-            rows={4}
-            placeholder="We are consolidating developer tooling spend this year."
-            required
-          />
-        </label>
+      <AddEvidence />
+    </>
+  );
+}
 
-        <label>
-          <span>True as of</span>
-          <input
-            type="date"
-            value={form.asOf}
-            onChange={(e) => setForm({ ...form, asOf: e.target.value })}
-          />
-        </label>
+function EvidenceRow({ item }: { item: EvidenceItem }) {
+  const { aggregate, busy, run } = useAccount();
+  const cites = citationCount(item.id, aggregate.claims);
+  const demotions = demotionsIfRemoved(item.id, aggregate.claims, aggregate.evidence);
 
-        <label>
-          <span>Link</span>
-          <input
-            value={form.externalUrl}
-            onChange={(e) => setForm({ ...form, externalUrl: e.target.value })}
-            placeholder="https://"
-          />
-        </label>
-
-        <label className="checkbox span-2">
-          <input
-            type="checkbox"
-            checked={form.confidential}
-            onChange={(e) => setForm({ ...form, confidential: e.target.checked })}
-          />
-          <span>Shared in confidence. Never quote this in outreach.</span>
-        </label>
-
-        <div className="form-actions span-2">
-          <button type="submit" disabled={busy || !form.verbatim.trim()}>
-            {busy ? 'Saving…' : 'Add evidence'}
+  return (
+    <div className="card">
+      <div className="row between">
+        <div className="spread">
+          <div className="row">
+            <span className="badge">{SOURCE_TYPE_LABELS[item.sourceType]}</span>
+            {item.evidenceCategory ? (
+              <span className="badge">
+                {EVIDENCE_CATEGORY_LABELS[item.evidenceCategory]}
+              </span>
+            ) : null}
+            <StatusBadge status={item.status} />
+            {item.confidential ? <span className="badge stale">Confidential</span> : null}
+          </div>
+          <p className="verbatim" style={{ marginTop: 8 }}>
+            {item.verbatim}
+          </p>
+          <div className="dim" style={{ marginTop: 6 }}>
+            {item.sourceRef ? `${item.sourceRef} · ` : ''}as of {formatDate(item.asOf)} ·{' '}
+            {cites} citation{cites === 1 ? '' : 's'}
+            {item.externalUrl ? (
+              <>
+                {' · '}
+                <a href={item.externalUrl} target="_blank" rel="noreferrer">
+                  source
+                </a>
+              </>
+            ) : null}
+          </div>
+          {item.implicationForDevin ? (
+            <p className="muted" style={{ marginTop: 6 }}>
+              <strong>For Devin:</strong> {item.implicationForDevin}
+            </p>
+          ) : null}
+          {item.nextDiscoveryQuestion ? (
+            <p className="muted">
+              <strong>Ask next:</strong> {item.nextDiscoveryQuestion}
+            </p>
+          ) : null}
+        </div>
+        <div className="row">
+          <select
+            value={item.status ?? ''}
+            disabled={busy}
+            title={
+              isVerifiableSource(item.sourceType)
+                ? undefined
+                : 'Inference can never be a fact.'
+            }
+            onChange={(e) =>
+              void run((rev) =>
+                api.patch(aggregate.account.id, 'evidence', item.id, rev, {
+                  status: e.target.value === '' ? null : (e.target.value as ClaimStatus),
+                })
+              )
+            }
+          >
+            <option value="">Unreviewed</option>
+            {CLAIM_STATUSES.map((status) => (
+              <option
+                key={status}
+                value={status}
+                disabled={status === 'FACT' && !isVerifiableSource(item.sourceType)}
+              >
+                {status}
+              </option>
+            ))}
+          </select>
+          <button
+            className="small danger"
+            disabled={busy}
+            title={
+              demotions.length
+                ? `${demotions.length} claim(s) will be demoted to HYPOTHESIS.`
+                : undefined
+            }
+            onClick={() => {
+              if (
+                demotions.length > 0 &&
+                !confirm(
+                  `Removing this demotes ${demotions.length} claim(s) to HYPOTHESIS:\n\n${demotions
+                    .map((claim) => `• ${claim.text}`)
+                    .join('\n')}\n\nContinue?`
+                )
+              ) {
+                return;
+              }
+              void run((rev) =>
+                api.remove(aggregate.account.id, 'evidence', item.id, rev)
+              );
+            }}
+          >
+            Delete
           </button>
         </div>
-      </form>
+      </div>
+    </div>
+  );
+}
 
-      <div className="card">
-        <div className="card-head">
-          <h2>Ledger ({aggregate.evidence.length})</h2>
-          <label className="inline-label">
-            <span>Filter</span>
+function AddEvidence() {
+  const { aggregate, busy, run } = useAccount();
+  const [verbatim, setVerbatim] = useState('');
+  const [sourceType, setSourceType] = useState<SourceType>('conversation');
+  const [sourceSystem, setSourceSystem] = useState<SourceSystem>('manual');
+  const [sourceRef, setSourceRef] = useState('');
+  const [externalUrl, setExternalUrl] = useState('');
+  const [category, setCategory] = useState<EvidenceCategory>('devin_fit');
+  const [asOf, setAsOf] = useState(new Date().toISOString().slice(0, 10));
+  const [confidential, setConfidential] = useState(false);
+  const [stakeholderId, setStakeholderId] = useState('');
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    const saved = await run((rev) =>
+      api.create(aggregate.account.id, 'evidence', rev, {
+        verbatim,
+        sourceType,
+        sourceSystem,
+        sourceRef: sourceRef || undefined,
+        externalUrl: externalUrl || undefined,
+        evidenceCategory: category,
+        asOf,
+        confidential,
+        stakeholderId: stakeholderId || undefined,
+      })
+    );
+    if (saved) {
+      setVerbatim('');
+      setSourceRef('');
+      setExternalUrl('');
+    }
+  }
+
+  return (
+    <Disclosure summary="Record evidence">
+      <form onSubmit={submit}>
+        <Field
+          label="What was said or written"
+          hint="Quote it. A paraphrase you cannot repeat back to them is not evidence."
+        >
+          <textarea value={verbatim} onChange={(e) => setVerbatim(e.target.value)} />
+        </Field>
+        <div className="grid two">
+          <Field label="Source type">
             <select
-              value={filter}
-              onChange={(e) => setFilter(e.target.value as SourceType | 'all')}
+              value={sourceType}
+              onChange={(e) => setSourceType(e.target.value as SourceType)}
             >
-              <option value="all">All sources</option>
-              {SOURCE_TYPES.map((type) => (
-                <option key={type} value={type}>
-                  {SOURCE_TYPE_LABELS[type]}
+              {SOURCE_TYPES.map((t) => (
+                <option key={t} value={t}>
+                  {SOURCE_TYPE_LABELS[t]}
                 </option>
               ))}
             </select>
-          </label>
+          </Field>
+          <Field label="Source system">
+            <select
+              value={sourceSystem}
+              onChange={(e) => setSourceSystem(e.target.value as SourceSystem)}
+            >
+              {SOURCE_SYSTEMS.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Where it came from">
+            <input
+              value={sourceRef}
+              onChange={(e) => setSourceRef(e.target.value)}
+              placeholder="Call with VP Platform, 12 Feb"
+            />
+          </Field>
+          <Field label="Link">
+            <input value={externalUrl} onChange={(e) => setExternalUrl(e.target.value)} />
+          </Field>
+          <Field label="Criterion">
+            <select
+              value={category}
+              onChange={(e) => setCategory(e.target.value as EvidenceCategory)}
+            >
+              {EVIDENCE_CATEGORIES.map((c) => (
+                <option key={c} value={c}>
+                  {EVIDENCE_CATEGORY_LABELS[c]}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="As of" hint="When it was true. Staleness is measured from this date.">
+            <input type="date" value={asOf} onChange={(e) => setAsOf(e.target.value)} />
+          </Field>
+          <Field label="Attributed to">
+            <select value={stakeholderId} onChange={(e) => setStakeholderId(e.target.value)}>
+              <option value="">Nobody in particular</option>
+              {aggregate.stakeholders.map((person) => (
+                <option key={person.id} value={person.id}>
+                  {person.name}
+                </option>
+              ))}
+            </select>
+          </Field>
         </div>
-
-        {visible.length === 0 ? (
-          <EmptyState title="Nothing recorded yet.">
-            <p>
-              Until there is evidence here, this account has no facts, only guesses. That is an
-              honest starting point, not a failure.
-            </p>
-          </EmptyState>
-        ) : (
-          <>
-            {EVIDENCE_CATEGORIES.map((cat) => {
-              const catItems = visible.filter((item) => item.evidenceCategory === cat);
-              if (catItems.length === 0) return null;
-              return (
-                <div key={cat} className="evidence-category-group">
-                  <h3 className="evidence-category-title">{EVIDENCE_CATEGORY_LABELS[cat]}</h3>
-                  <ul className="evidence-list">
-                    {catItems.map((item) => renderEvidenceItem(item, citationCounts.get(item.id) ?? 0, remove))}
-                  </ul>
-                </div>
-              );
-            })}
-            {/* Evidence without a category (manually added) */}
-            {(() => {
-              const uncategorized = visible.filter((item) => !item.evidenceCategory);
-              if (uncategorized.length === 0) return null;
-              return (
-                <ul className="evidence-list">
-                  {uncategorized.map((item) => renderEvidenceItem(item, citationCounts.get(item.id) ?? 0, remove))}
-                </ul>
-              );
-            })()}
-          </>
-        )}
-      </div>
-    </div>
+        <label className="checkline">
+          <input
+            type="checkbox"
+            checked={confidential}
+            onChange={(e) => setConfidential(e.target.checked)}
+          />
+          <span>Shared in confidence — never quote this outside the account team.</span>
+        </label>
+        <button className="primary" style={{ marginTop: 10 }} disabled={busy || !verbatim.trim()}>
+          Save evidence
+        </button>
+      </form>
+    </Disclosure>
   );
 }

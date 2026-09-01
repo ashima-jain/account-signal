@@ -1,58 +1,55 @@
 /**
  * Netlify Blobs persistence.
  *
- * Layout:
- *   index            -> AccountIndexEntry[]        (derived, rebuildable)
- *   account/<id>     -> AccountAggregate           (source of truth)
+ *   index         -> AccountIndexEntry[]   derived, rebuildable from accounts
+ *   account/<id>  -> AccountAggregate      source of truth, one blob per account
  *
- * One blob per account keeps a write atomic across all of an account's
- * entities, and avoids the per-record request fan-out the v1 code had.
- * Concurrency is enforced with ETag compare-and-swap rather than a version
- * field, so a stale write is rejected by the storage layer itself.
+ * One blob per account makes every write atomic across all of that account's
+ * entities: a claim and the evidence it cites can never be half-saved. The cost
+ * is that two people editing one account race, which is what the rev check and
+ * the storage ETag are for.
  */
 
 import { getStore, type Store } from '@netlify/blobs';
+import { countValidatedChampions } from '../../src/domain/champion';
 import {
   EVENTS_CAP,
+  inferDealStage,
   type AccountAggregate,
   type AccountIndexEntry,
   type ChangeEvent,
   type ChangeType,
   type ID,
 } from '../../src/domain/types';
-import { championTier } from '../../src/domain/champion';
 
-const STORE_NAME = 'signal_v2';
+const STORE_NAME = 'account_signal';
 const INDEX_KEY = 'index';
-const ACCOUNT_PREFIX = 'account/';
 
-/** Raised when a conditional write loses. Surfaces to the client as HTTP 409. */
 export class ConflictError extends Error {
-  constructor(message = 'This account was modified by another tab. Reload and retry.') {
+  readonly status = 409;
+  constructor(message = 'This account changed while you were editing it. Reload and retry.') {
     super(message);
     this.name = 'ConflictError';
   }
 }
 
+/**
+ * Instantiated per call on purpose: at module scope this can run before the
+ * Blobs context exists, which fails only in production.
+ */
 function store(): Store {
-  // Instantiated per request on purpose. Calling getStore() at module scope can
-  // execute before the Blobs context is populated, which fails in production.
   return getStore({ name: STORE_NAME, consistency: 'strong' });
 }
 
-function accountKey(id: ID): string {
-  return `${ACCOUNT_PREFIX}${id}`;
-}
+const accountKey = (id: ID) => `account/${id}`;
 
 export function newId(): ID {
   return crypto.randomUUID();
 }
 
-// ─── Aggregate read / write ──────────────────────────────────────────────────
-
 export interface LoadedAggregate {
   aggregate: AccountAggregate;
-  /** Pass back to saveAggregate to guarantee no lost update. */
+  /** Storage ETag, distinct from the rev the client sees. */
   etag?: string;
 }
 
@@ -62,31 +59,26 @@ export async function readAggregate(id: ID): Promise<LoadedAggregate | null> {
   return { aggregate: result.data as AccountAggregate, etag: result.etag };
 }
 
-export async function createAggregate(
-  aggregate: AccountAggregate
-): Promise<LoadedAggregate> {
+export async function createAggregate(aggregate: AccountAggregate): Promise<AccountAggregate> {
   const write = await store().setJSON(accountKey(aggregate.account.id), aggregate, {
     onlyIfNew: true,
   });
-  if (!write.modified) {
-    throw new ConflictError('An account with this id already exists.');
-  }
+  if (!write.modified) throw new ConflictError('An account with this id already exists.');
   await syncIndexEntry(indexEntryFor(aggregate));
-  return { aggregate, etag: write.etag };
+  return aggregate;
 }
 
 /**
- * Bumps rev, stamps updatedAt, and persists.
+ * Bumps the rev, stamps updatedAt and persists.
  *
- * Uses the storage ETag for a true compare-and-swap when one is available, but
- * does not require it: reads do not return an ETag in every environment, and
- * conditioning on a missing value would fail every update. The authoritative
- * conflict check is the rev comparison in mutateAggregate.
+ * Conditions on the storage ETag when the read gave us one — some environments
+ * do not return an ETag, and conditioning on `undefined` would fail every
+ * write. The rev comparison in mutateAggregate is the check we always have.
  */
 export async function saveAggregate(
   aggregate: AccountAggregate,
   storageEtag: string | undefined
-): Promise<LoadedAggregate> {
+): Promise<AccountAggregate> {
   const next: AccountAggregate = {
     ...aggregate,
     rev: aggregate.rev + 1,
@@ -101,46 +93,46 @@ export async function saveAggregate(
   if (!write.modified) throw new ConflictError();
 
   await syncIndexEntry(indexEntryFor(next));
-  return { aggregate: next, etag: write.etag };
+  return next;
 }
 
 /**
- * Read, mutate, write. Every sub-entity endpoint goes through here so no
- * handler can forget the conflict check. Returns null if the account does not
- * exist; the mutator may throw to abort the write.
+ * Read, mutate, write. Every mutating endpoint goes through here so no handler
+ * can forget the conflict check. The mutator may throw to abort the write.
  */
-export async function mutateAggregate<T>(
+export async function mutateAggregate(
   id: ID,
   expectedRev: number | undefined,
-  mutator: (aggregate: AccountAggregate) => T
-): Promise<{ aggregate: AccountAggregate; etag?: string; result: T } | null> {
+  mutate: (aggregate: AccountAggregate) => void
+): Promise<AccountAggregate | null> {
   const loaded = await readAggregate(id);
   if (!loaded) return null;
 
   if (expectedRev !== undefined && loaded.aggregate.rev !== expectedRev) {
     throw new ConflictError(
-      `This account has changed since you loaded it (now at revision ${loaded.aggregate.rev}, you had ${expectedRev}). Reload and retry.`
+      `This account is now at revision ${loaded.aggregate.rev}, you were editing revision ${expectedRev}. Reload and retry.`
     );
   }
 
-  const result = mutator(loaded.aggregate);
-  const saved = await saveAggregate(loaded.aggregate, loaded.etag);
-  return { aggregate: saved.aggregate, etag: saved.etag, result };
+  mutate(loaded.aggregate);
+  return saveAggregate(loaded.aggregate, loaded.etag);
 }
 
 export async function deleteAggregate(id: ID): Promise<void> {
   await store().delete(accountKey(id));
-  await removeIndexEntry(id);
+  const index = await readIndex();
+  await writeIndex(index.filter((entry) => entry.id !== id));
 }
 
 // ─── Change log ──────────────────────────────────────────────────────────────
 
-export function newEvent(
+export function appendEvent(
+  aggregate: AccountAggregate,
   type: ChangeType,
   summary: string,
   opts: { entityRef?: string; reason?: string } = {}
-): ChangeEvent {
-  return {
+): void {
+  const event: ChangeEvent = {
     id: newId(),
     at: new Date().toISOString(),
     type,
@@ -148,13 +140,6 @@ export function newEvent(
     entityRef: opts.entityRef,
     reason: opts.reason,
   };
-}
-
-/**
- * Appends to the account's history, newest last, capped so the aggregate blob
- * cannot grow without bound. Mutates in place.
- */
-export function appendEvent(aggregate: AccountAggregate, event: ChangeEvent): void {
   aggregate.events.push(event);
   if (aggregate.events.length > EVENTS_CAP) {
     aggregate.events = aggregate.events.slice(-EVENTS_CAP);
@@ -163,84 +148,53 @@ export function appendEvent(aggregate: AccountAggregate, event: ChangeEvent): vo
 
 // ─── Index ───────────────────────────────────────────────────────────────────
 
-const STALE_ACCOUNT_DAYS = 14;
-
 export function indexEntryFor(aggregate: AccountAggregate): AccountIndexEntry {
-  const { account, claims, evidence, stakeholders, signals, actions } = aggregate;
-
-  const openActions = actions.filter((a) => a.status === 'open');
-  const dueDates = openActions
+  const { account, evidence, claims, stakeholders, signals, wedges, actions } = aggregate;
+  const open = actions.filter((a) => a.status === 'open');
+  const nextDue = open
     .map((a) => a.dueAt)
     .filter((d): d is string => Boolean(d))
-    .sort();
-  const nextActionDueAt = dueDates[0];
+    .sort()[0];
 
-  const validatedChampions = stakeholders.filter(
-    (s) =>
-      championTier(
-        signals.filter((sig) => sig.stakeholderId === s.id),
-        evidence
-      ) === 'Validated Champion'
-  ).length;
-
-  const now = Date.now();
-  const overdue = dueDates.some((d) => new Date(d).getTime() < now);
-  const stale =
-    now - new Date(account.updatedAt).getTime() >
-    STALE_ACCOUNT_DAYS * 24 * 60 * 60 * 1000;
-  const noEconomicBuyer = !stakeholders.some((s) => s.mapRoles.includes('economic_buyer'));
+  const unknownCount = claims.filter((c) => c.status === 'UNKNOWN').length;
+  const validatedChampions = countValidatedChampions(stakeholders, signals, evidence);
 
   return {
     id: account.id,
     companyName: account.companyName,
+    domain: account.domain,
     updatedAt: account.updatedAt,
     evidenceCount: evidence.length,
     factCount: claims.filter((c) => c.status === 'FACT').length,
-    unknownCount: claims.filter((c) => c.status === 'UNKNOWN').length,
+    unknownCount,
     stakeholderCount: stakeholders.length,
     validatedChampions,
-    openActions: openActions.length,
-    nextActionDueAt,
-    // Anything that should pull the seller's attention on a Monday.
-    needsAttention: overdue || stale || evidence.length === 0 || noEconomicBuyer,
+    validatedWedges: wedges.filter((w) => w.status === 'validated').length,
+    openActions: open.length,
+    nextActionDueAt: nextDue,
+    dealStage: inferDealStage(aggregate),
+    seedStatus: aggregate.seedStatus,
+    needsAttention:
+      evidence.length === 0 ||
+      claims.length === 0 ||
+      open.length === 0 ||
+      (validatedChampions === 0 && stakeholders.length > 0),
   };
 }
 
-export async function listIndex(): Promise<AccountIndexEntry[]> {
-  const raw = await store().get(INDEX_KEY, { type: 'json' });
-  const entries = (raw as AccountIndexEntry[] | null) ?? (await rebuildIndex());
-  return [...entries].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+export async function readIndex(): Promise<AccountIndexEntry[]> {
+  const data = await store().get(INDEX_KEY, { type: 'json' });
+  return (data as AccountIndexEntry[] | null) ?? [];
 }
 
-/**
- * The index is a cache of derived data. It is written without CAS because a
- * lost update only costs a stale portfolio row, and it can always be rebuilt
- * from the account blobs.
- */
-async function syncIndexEntry(entry: AccountIndexEntry): Promise<void> {
-  const raw = await store().get(INDEX_KEY, { type: 'json' });
-  const entries = (raw as AccountIndexEntry[] | null) ?? [];
-  const next = entries.filter((e) => e.id !== entry.id);
-  next.push(entry);
-  await store().setJSON(INDEX_KEY, next);
-}
-
-async function removeIndexEntry(id: ID): Promise<void> {
-  const raw = await store().get(INDEX_KEY, { type: 'json' });
-  const entries = (raw as AccountIndexEntry[] | null) ?? [];
-  await store().setJSON(
-    INDEX_KEY,
-    entries.filter((e) => e.id !== id)
-  );
-}
-
-export async function rebuildIndex(): Promise<AccountIndexEntry[]> {
-  const { blobs } = await store().list({ prefix: ACCOUNT_PREFIX });
-  const entries: AccountIndexEntry[] = [];
-  for (const blob of blobs) {
-    const raw = await store().get(blob.key, { type: 'json' });
-    if (raw) entries.push(indexEntryFor(raw as AccountAggregate));
-  }
+async function writeIndex(entries: AccountIndexEntry[]): Promise<void> {
   await store().setJSON(INDEX_KEY, entries);
-  return entries;
+}
+
+async function syncIndexEntry(entry: AccountIndexEntry): Promise<void> {
+  const index = await readIndex();
+  const without = index.filter((e) => e.id !== entry.id);
+  without.push(entry);
+  without.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  await writeIndex(without);
 }

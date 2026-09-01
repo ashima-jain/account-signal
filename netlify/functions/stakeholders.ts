@@ -1,245 +1,202 @@
-/**
- * Stakeholder CRUD.
- *
- * A stakeholder is a person at the account. Their champion tier is computed
- * from their signals and evidence, never stored, so the UI and the server
- * always agree.
- */
-
 import type { Config, Context } from '@netlify/functions';
-import { appendEvent, mutateAggregate, newEvent, newId, readAggregate } from '../lib/store';
 import {
-  BadRequestError,
-  error,
-  expectedRev,
-  jsonWithRev,
-  mutationResult,
+  aggregateResponse,
+  BadRequest,
+  errorResponse,
+  expectedRevOf,
+  handle,
+  json,
+  methodNotAllowed,
+  oneOf,
+  optionalString,
   readJson,
   requireString,
-  toResponse,
+  stringArray,
 } from '../lib/http';
+import { appendEvent, mutateAggregate, readAggregate } from '../lib/store';
+import { newId } from '../lib/store';
+import { championTier } from '../../src/domain/champion';
 import {
   BUYER_ROLES,
   POSTURES,
+  SOURCE_SYSTEMS,
   type BuyerRole,
-  type Posture,
   type Rating,
   type Stakeholder,
 } from '../../src/domain/types';
 
-export const config: Config = {
-  path: [
-    '/api/accounts/:accountId/stakeholders',
-    '/api/accounts/:accountId/stakeholders/:stakeholderId',
-  ],
-};
+export default async (request: Request, context: Context): Promise<Response> =>
+  handle(async () => {
+    const { id, sid } = context.params;
 
-export default async (req: Request, context: Context): Promise<Response> => {
-  const accountId = context.params.accountId;
-  const stakeholderId = context.params.stakeholderId;
-
-  try {
-    if (!accountId) return error(400, 'Missing account id.');
-
-    if (!stakeholderId) {
-      if (req.method === 'GET') return await listStakeholders(accountId);
-      if (req.method === 'POST') return await addStakeholder(req, accountId);
-      return error(405, `${req.method} is not supported on this route.`);
+    if (request.method === 'GET') {
+      const loaded = await readAggregate(id);
+      if (!loaded) return errorResponse('Account not found.', 404);
+      return json(loaded.aggregate.stakeholders);
     }
 
-    if (req.method === 'PATCH' || req.method === 'PUT') {
-      return await updateStakeholder(req, accountId, stakeholderId);
-    }
-    if (req.method === 'DELETE') return await removeStakeholder(req, accountId, stakeholderId);
-    return error(405, `${req.method} is not supported on this route.`);
-  } catch (err) {
-    return toResponse(err);
-  }
-};
+    if (request.method === 'POST') return addStakeholder(request, id);
+    if (request.method === 'PATCH' && sid) return updateStakeholder(request, id, sid);
+    if (request.method === 'DELETE' && sid) return removeStakeholder(request, id, sid);
+    return methodNotAllowed(request.method);
+  });
 
-function parseMapRoles(value: unknown): BuyerRole[] {
-  if (value === undefined || value === null) return [];
-  if (!Array.isArray(value) || value.some((v) => typeof v !== 'string')) {
-    throw new BadRequestError('"mapRoles" must be an array of strings.');
-  }
-  return value.filter((v) => BUYER_ROLES.includes(v as BuyerRole)) as BuyerRole[];
-}
-
-function parsePosture(value: unknown): Posture {
-  if (value === undefined) return 'unknown';
-  if (typeof value !== 'string' || !POSTURES.includes(value as Posture)) {
-    throw new BadRequestError(`"posture" must be one of: ${POSTURES.join(', ')}.`);
-  }
-  return value as Posture;
-}
-
-function parseRating(value: unknown, field: string): Rating {
-  if (value === undefined) return 3;
+function rating(value: unknown, field: string, fallback: Rating): Rating {
+  if (value === undefined || value === null || value === '') return fallback;
   const n = Number(value);
   if (!Number.isInteger(n) || n < 1 || n > 5) {
-    throw new BadRequestError(`"${field}" must be an integer 1-5.`);
+    throw new BadRequest(`"${field}" must be an integer between 1 and 5.`);
   }
   return n as Rating;
 }
 
-function parseStringArray(value: unknown, field: string): string[] {
-  if (value === undefined || value === null) return [];
-  if (!Array.isArray(value) || value.some((v) => typeof v !== 'string')) {
-    throw new BadRequestError(`"${field}" must be an array of strings.`);
-  }
-  return value as string[];
+function buyerRoles(value: unknown): BuyerRole[] {
+  return stringArray(value, 'mapRoles').map((role) =>
+    oneOf(role, BUYER_ROLES, 'mapRoles')
+  );
 }
 
-function optionalString(value: unknown, field: string): string | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (typeof value !== 'string') throw new BadRequestError(`"${field}" must be a string.`);
-  return value.trim() || undefined;
-}
-
-async function listStakeholders(accountId: string): Promise<Response> {
-  const loaded = await readAggregate(accountId);
-  if (!loaded) return error(404, 'Account not found.');
-  return jsonWithRev(loaded.aggregate.stakeholders, loaded.aggregate.rev);
-}
-
-async function addStakeholder(req: Request, accountId: string): Promise<Response> {
-  const body = await readJson<Record<string, unknown>>(req);
-  const now = new Date().toISOString();
+async function addStakeholder(request: Request, id: string): Promise<Response> {
+  const body = await readJson<Record<string, unknown>>(request);
 
   const stakeholder: Stakeholder = {
     id: newId(),
     name: requireString(body.name, 'name'),
     role: requireString(body.role, 'role'),
     businessUnit: optionalString(body.businessUnit, 'businessUnit'),
-    emails: parseStringArray(body.emails, 'emails'),
+    emails: stringArray(body.emails, 'emails'),
     linkedinUrl: optionalString(body.linkedinUrl, 'linkedinUrl'),
-    mapRoles: parseMapRoles(body.mapRoles),
-    priorities: parseStringArray(body.priorities, 'priorities'),
+    mapRoles: buyerRoles(body.mapRoles),
+    priorities: stringArray(body.priorities, 'priorities'),
     relevance: optionalString(body.relevance, 'relevance'),
-    influence: parseRating(body.influence, 'influence'),
-    relationshipStrength: parseRating(body.relationshipStrength, 'relationshipStrength'),
-    posture: parsePosture(body.posture),
+    influence: rating(body.influence, 'influence', 3),
+    relationshipStrength: rating(body.relationshipStrength, 'relationshipStrength', 1),
+    posture: oneOf(body.posture, POSTURES, 'posture', 'unknown'),
     accessPath: optionalString(body.accessPath, 'accessPath'),
-    whatToLearn: parseStringArray(body.whatToLearn, 'whatToLearn'),
-    introducedByStakeholderId: optionalString(body.introducedByStakeholderId, 'introducedByStakeholderId'),
-    createdAt: now,
+    whatToLearn: stringArray(body.whatToLearn, 'whatToLearn'),
+    lastContactAt: optionalString(body.lastContactAt, 'lastContactAt'),
+    lastContactSource: body.lastContactSource
+      ? oneOf(body.lastContactSource, SOURCE_SYSTEMS, 'lastContactSource')
+      : undefined,
+    introducedByStakeholderId: optionalString(
+      body.introducedByStakeholderId,
+      'introducedByStakeholderId'
+    ),
+    createdAt: new Date().toISOString(),
   };
 
-  const outcome = await mutateAggregate(accountId, expectedRev(req), (aggregate) => {
-    if (stakeholder.introducedByStakeholderId) {
-      const exists = aggregate.stakeholders.some(
-        (s) => s.id === stakeholder.introducedByStakeholderId
-      );
-      if (!exists) {
-        throw new BadRequestError('introducedByStakeholderId does not exist on this account.');
-      }
-    }
-
+  const updated = await mutateAggregate(id, expectedRevOf(request), (aggregate) => {
     aggregate.stakeholders.push(stakeholder);
     appendEvent(
       aggregate,
-      newEvent('stakeholder_added', `Stakeholder added: ${stakeholder.name} (${stakeholder.role}).`, {
-        entityRef: `stakeholder:${stakeholder.id}`,
-      })
+      'stakeholder_added',
+      `${stakeholder.name} — ${stakeholder.role}`,
+      { entityRef: `stakeholder:${stakeholder.id}` }
     );
-    return stakeholder;
   });
 
-  if (!outcome) return error(404, 'Account not found.');
-  return mutationResult(outcome.aggregate, outcome.result.id, 201);
+  if (!updated) return errorResponse('Account not found.', 404);
+  return aggregateResponse(updated, 201);
 }
 
-async function updateStakeholder(
-  req: Request,
-  accountId: string,
-  stakeholderId: string
-): Promise<Response> {
-  const body = await readJson<Record<string, unknown>>(req);
+async function updateStakeholder(request: Request, id: string, sid: string): Promise<Response> {
+  const body = await readJson<Record<string, unknown>>(request);
 
-  const outcome = await mutateAggregate(accountId, expectedRev(req), (aggregate) => {
-    const s = aggregate.stakeholders.find((st) => st.id === stakeholderId);
-    if (!s) return null;
+  let missing = false;
+  const updated = await mutateAggregate(id, expectedRevOf(request), (aggregate) => {
+    const person = aggregate.stakeholders.find((s) => s.id === sid);
+    if (!person) {
+      missing = true;
+      return;
+    }
 
-    const previousPosture = s.posture;
+    const previousPosture = person.posture;
+    const previousTier = championTier(sid, aggregate.signals, aggregate.evidence);
 
-    if (body.name !== undefined) s.name = requireString(body.name, 'name');
-    if (body.role !== undefined) s.role = requireString(body.role, 'role');
-    if (body.businessUnit !== undefined) s.businessUnit = optionalString(body.businessUnit, 'businessUnit');
-    if (body.emails !== undefined) s.emails = parseStringArray(body.emails, 'emails');
-    if (body.linkedinUrl !== undefined) s.linkedinUrl = optionalString(body.linkedinUrl, 'linkedinUrl');
-    if (body.mapRoles !== undefined) s.mapRoles = parseMapRoles(body.mapRoles);
-    if (body.priorities !== undefined) s.priorities = parseStringArray(body.priorities, 'priorities');
-    if (body.relevance !== undefined) s.relevance = optionalString(body.relevance, 'relevance');
-    if (body.influence !== undefined) s.influence = parseRating(body.influence, 'influence');
+    if (body.name !== undefined) person.name = requireString(body.name, 'name');
+    if (body.role !== undefined) person.role = requireString(body.role, 'role');
+    if (body.businessUnit !== undefined) {
+      person.businessUnit = optionalString(body.businessUnit, 'businessUnit');
+    }
+    if (body.emails !== undefined) person.emails = stringArray(body.emails, 'emails');
+    if (body.linkedinUrl !== undefined) {
+      person.linkedinUrl = optionalString(body.linkedinUrl, 'linkedinUrl');
+    }
+    if (body.mapRoles !== undefined) person.mapRoles = buyerRoles(body.mapRoles);
+    if (body.priorities !== undefined) {
+      person.priorities = stringArray(body.priorities, 'priorities');
+    }
+    if (body.relevance !== undefined) person.relevance = optionalString(body.relevance, 'relevance');
+    if (body.influence !== undefined) {
+      person.influence = rating(body.influence, 'influence', person.influence);
+    }
     if (body.relationshipStrength !== undefined) {
-      s.relationshipStrength = parseRating(body.relationshipStrength, 'relationshipStrength');
-    }
-    if (body.posture !== undefined) s.posture = parsePosture(body.posture);
-    if (body.accessPath !== undefined) s.accessPath = optionalString(body.accessPath, 'accessPath');
-    if (body.whatToLearn !== undefined) s.whatToLearn = parseStringArray(body.whatToLearn, 'whatToLearn');
-    if (body.lastContactAt !== undefined) {
-      s.lastContactAt = optionalString(body.lastContactAt, 'lastContactAt');
-    }
-
-    if (s.posture !== previousPosture) {
-      appendEvent(
-        aggregate,
-        newEvent(
-          'posture_changed',
-          `${s.name}: posture ${previousPosture} -> ${s.posture}.`,
-          { entityRef: `stakeholder:${s.id}` }
-        )
+      person.relationshipStrength = rating(
+        body.relationshipStrength,
+        'relationshipStrength',
+        person.relationshipStrength
       );
     }
-
-    appendEvent(
-      aggregate,
-      newEvent('stakeholder_updated', `Stakeholder updated: ${s.name}.`, {
-        entityRef: `stakeholder:${s.id}`,
-      })
-    );
-
-    return s;
-  });
-
-  if (!outcome) return error(404, 'Account not found.');
-  if (!outcome.result) return error(404, 'Stakeholder not found.');
-  return mutationResult(outcome.aggregate, outcome.result.id);
-}
-
-async function removeStakeholder(
-  req: Request,
-  accountId: string,
-  stakeholderId: string
-): Promise<Response> {
-  const outcome = await mutateAggregate(accountId, expectedRev(req), (aggregate) => {
-    const s = aggregate.stakeholders.find((st) => st.id === stakeholderId);
-    if (!s) return null;
-
-    aggregate.stakeholders = aggregate.stakeholders.filter((st) => st.id !== stakeholderId);
-    // Remove signals for this stakeholder and clear references from others.
-    aggregate.signals = aggregate.signals.filter((sig) => sig.stakeholderId !== stakeholderId);
-    for (const other of aggregate.stakeholders) {
-      if (other.introducedByStakeholderId === stakeholderId) {
-        other.introducedByStakeholderId = undefined;
-      }
+    if (body.posture !== undefined) {
+      person.posture = oneOf(body.posture, POSTURES, 'posture', person.posture);
     }
-    // Clear evidence stakeholderId references.
-    for (const ev of aggregate.evidence) {
-      if (ev.stakeholderId === stakeholderId) ev.stakeholderId = undefined;
+    if (body.accessPath !== undefined) {
+      person.accessPath = optionalString(body.accessPath, 'accessPath');
+    }
+    if (body.whatToLearn !== undefined) {
+      person.whatToLearn = stringArray(body.whatToLearn, 'whatToLearn');
+    }
+    if (body.lastContactAt !== undefined) {
+      person.lastContactAt = optionalString(body.lastContactAt, 'lastContactAt');
     }
 
-    appendEvent(
-      aggregate,
-      newEvent('stakeholder_updated', `Stakeholder removed: ${s.name}.`, {
-        entityRef: `stakeholder:${stakeholderId}`,
-        reason: 'Deleted by user.',
-      })
-    );
-    return s;
+    if (previousPosture !== person.posture) {
+      appendEvent(
+        aggregate,
+        'stakeholder_updated',
+        `${person.name}: posture ${previousPosture} → ${person.posture}.`,
+        { entityRef: `stakeholder:${person.id}` }
+      );
+    } else {
+      appendEvent(aggregate, 'stakeholder_updated', `${person.name} updated.`, {
+        entityRef: `stakeholder:${person.id}`,
+      });
+    }
+
+    const nextTier = championTier(sid, aggregate.signals, aggregate.evidence);
+    if (nextTier !== previousTier) {
+      appendEvent(
+        aggregate,
+        'champion_tier_changed',
+        `${person.name}: ${previousTier} → ${nextTier}.`,
+        { entityRef: `stakeholder:${person.id}` }
+      );
+    }
   });
 
-  if (!outcome) return error(404, 'Account not found.');
-  if (!outcome.result) return error(404, 'Stakeholder not found.');
-  return mutationResult(outcome.aggregate, stakeholderId);
+  if (!updated || missing) return errorResponse('Stakeholder not found.', 404);
+  return aggregateResponse(updated);
 }
+
+async function removeStakeholder(request: Request, id: string, sid: string): Promise<Response> {
+  let missing = false;
+  const updated = await mutateAggregate(id, expectedRevOf(request), (aggregate) => {
+    const person = aggregate.stakeholders.find((s) => s.id === sid);
+    if (!person) {
+      missing = true;
+      return;
+    }
+    aggregate.stakeholders = aggregate.stakeholders.filter((s) => s.id !== sid);
+    aggregate.signals = aggregate.signals.filter((s) => s.stakeholderId !== sid);
+    appendEvent(aggregate, 'stakeholder_removed', `${person.name} removed.`, {
+      entityRef: `stakeholder:${sid}`,
+    });
+  });
+
+  if (!updated || missing) return errorResponse('Stakeholder not found.', 404);
+  return aggregateResponse(updated);
+}
+
+export const config: Config = {
+  path: ['/api/accounts/:id/stakeholders', '/api/accounts/:id/stakeholders/:sid'],
+};

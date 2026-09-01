@@ -1,20 +1,8 @@
-import { useCallback, useEffect, useState } from 'react';
-import { NavLink, Outlet, useNavigate, useOutletContext, useParams } from 'react-router-dom';
-import { api, type MutationResponse } from '../api';
-import type { AccountAggregate } from '../domain/types';
-import { ErrorBanner, Spinner } from '../components/Feedback';
-
-export interface AccountContext {
-  aggregate: AccountAggregate;
-  /** Replace local state with the server's post-write aggregate. */
-  apply: (response: MutationResponse) => void;
-  reload: () => Promise<void>;
-  setError: (message: string | null) => void;
-}
-
-export function useAccount(): AccountContext {
-  return useOutletContext<AccountContext>();
-}
+import { Link, NavLink, Outlet, useParams } from 'react-router-dom';
+import { useAccountData } from '../useAccount';
+import { nextBestAction } from '../domain/nba';
+import { stageLabel } from '../domain/nba';
+import { api } from '../api';
 
 const TABS = [
   { to: '.', label: 'Thesis', end: true },
@@ -22,83 +10,111 @@ const TABS = [
   { to: 'stakeholders', label: 'Stakeholders' },
   { to: 'wedges', label: 'Wedges' },
   { to: 'actions', label: 'Actions' },
-  { to: 'changelog', label: 'Change log' },
+  { to: 'log', label: 'Change log' },
 ];
 
 export default function AccountLayout() {
-  const { accountId } = useParams<{ accountId: string }>();
-  const navigate = useNavigate();
-  const [aggregate, setAggregate] = useState<AccountAggregate | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const { id } = useParams();
+  const store = useAccountData(id);
+  const { aggregate, loading, error, busy, run, clearError } = store;
 
-  const reload = useCallback(async () => {
-    if (!accountId) return;
-    try {
-      setAggregate(await api.getAccount(accountId));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not load the account.');
-    }
-  }, [accountId]);
-
-  useEffect(() => {
-    void reload();
-  }, [reload]);
-
-  const apply = useCallback((response: MutationResponse) => {
-    setAggregate(response.aggregate);
-  }, []);
-
-  async function remove() {
-    if (!accountId || !aggregate) return;
-    const confirmed = window.confirm(
-      `Delete ${aggregate.account.companyName} and everything recorded against it? This cannot be undone.`
+  if (loading && !aggregate) {
+    return (
+      <div className="shell">
+        <p className="muted">Loading account…</p>
+      </div>
     );
-    if (!confirmed) return;
-
-    try {
-      await api.deleteAccount(accountId);
-      navigate('/');
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not delete the account.');
-    }
   }
 
   if (!aggregate) {
     return (
-      <section className="screen">
-        <ErrorBanner error={error} onDismiss={() => setError(null)} />
-        {!error && <Spinner label="Loading account" />}
-      </section>
+      <div className="shell">
+        <div className="banner error">{error ?? 'Account not found.'}</div>
+        <Link to="/">Back to the command center</Link>
+      </div>
     );
   }
 
-  const context: AccountContext = { aggregate, apply, reload, setError };
+  const nba = nextBestAction(aggregate);
+  const seeding = aggregate.seedStatus === 'running';
 
   return (
-    <section className="screen">
-      <div className="screen-head">
+    <div className="shell">
+      <div className="topbar">
         <div>
+          <div className="dim">
+            <Link to="/">Command center</Link>
+          </div>
           <h1>{aggregate.account.companyName}</h1>
-          <p className="subtle">
-            {aggregate.evidence.length} pieces of evidence · revision {aggregate.rev}
-          </p>
+          <div className="dim">
+            {stageLabel(aggregate)} · rev {aggregate.rev}
+            {aggregate.account.domain ? ` · ${aggregate.account.domain}` : ''}
+          </div>
         </div>
-        <button type="button" className="danger-quiet" onClick={remove}>
-          Delete account
-        </button>
+        <div className="row">
+          {busy ? <span className="dim">Saving…</span> : null}
+          <button
+            disabled={busy || aggregate.evidence.length > 0}
+            title={
+              aggregate.evidence.length > 0
+                ? 'Seeding only runs on an empty account.'
+                : 'Research this company with Claude.'
+            }
+            onClick={() => void run(() => api.seed(aggregate.account.id))}
+          >
+            Research
+          </button>
+        </div>
       </div>
 
-      <ErrorBanner error={error} onDismiss={() => setError(null)} />
+      {error ? (
+        <div className="banner error">
+          <div className="row between">
+            <div>{error}</div>
+            <button className="ghost small" onClick={clearError}>
+              Dismiss
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {seeding ? (
+        <div className="banner warn">
+          Research is still running. This page refreshes itself as findings land.
+        </div>
+      ) : null}
+
+      {nba ? (
+        <div className="banner">
+          <div className="row between">
+            <div>
+              <div className="row">
+                <span className={`badge ${nba.tier}`}>{nba.tier}</span>
+                <strong>Next best action: {nba.title}</strong>
+              </div>
+              <div className="muted" style={{ marginTop: 4 }}>
+                {nba.why}
+              </div>
+              <div style={{ marginTop: 4 }}>{nba.suggestedAction}</div>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <nav className="tabs">
         {TABS.map((tab) => (
-          <NavLink key={tab.label} to={tab.to} end={tab.end} className="tab">
+          <NavLink
+            key={tab.label}
+            to={tab.to}
+            end={tab.end}
+            className={({ isActive }) => (isActive ? 'active' : '')}
+          >
             {tab.label}
           </NavLink>
         ))}
       </nav>
 
-      <Outlet context={context} />
-    </section>
+      <Outlet context={store} />
+    </div>
   );
 }

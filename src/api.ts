@@ -1,363 +1,113 @@
 /**
- * Typed API client.
+ * Thin client over the account API.
  *
- * Every mutation returns the whole aggregate, so callers replace one piece of
- * state rather than reconciling sub-entities. The account's `rev` is sent as
- * If-Match on writes, which is what makes a stale tab fail loudly with 409
- * instead of quietly overwriting someone else's edit.
+ * Every mutation returns the whole aggregate and an `ETag: "rev-N"`, and every
+ * mutation sends the last rev back as `If-Match`. The client therefore never
+ * merges partial state, and a write made against a stale view is rejected by
+ * the server rather than silently overwriting someone else's edit.
  */
 
-import type {
-  AccountAggregate,
-  AccountIndexEntry,
-  BuyerRole,
-  Channel,
-  ChampionSignalType,
-  Claim,
-  ClaimCategory,
-  ClaimStatus,
-  EvidenceItem,
-  Horizon,
-  ID,
-  Posture,
-  SourceSystem,
-  SourceType,
-  WedgeStatus,
-} from './domain/types';
+import type { AccountAggregate, AccountIndexEntry } from './domain/types';
 
 export class ApiError extends Error {
   readonly status: number;
 
-  constructor(status: number, message: string) {
+  constructor(message: string, status: number) {
     super(message);
     this.name = 'ApiError';
     this.status = status;
   }
-}
 
-/** The account changed underneath this tab. Callers should reload, not retry. */
-export class StaleDataError extends ApiError {
-  constructor(message: string) {
-    super(409, message);
-    this.name = 'StaleDataError';
+  /** A stale write. The caller should reload rather than retry blindly. */
+  get isConflict(): boolean {
+    return this.status === 409;
   }
 }
 
-export interface MutationResponse {
-  aggregate: AccountAggregate;
-  entityId?: ID;
-}
-
-async function request<T>(path: string, init: RequestInit = {}, rev?: number): Promise<T> {
-  const headers = new Headers(init.headers);
-  if (init.body !== undefined) headers.set('Content-Type', 'application/json');
+async function request<T>(
+  path: string,
+  init: RequestInit & { rev?: number } = {}
+): Promise<T> {
+  const { rev, ...rest } = init;
+  const headers = new Headers(rest.headers);
+  if (rest.body) headers.set('content-type', 'application/json');
   if (rev !== undefined) headers.set('If-Match', `"rev-${rev}"`);
 
-  const response = await fetch(path, { ...init, headers });
+  const response = await fetch(path, { ...rest, headers });
+  const text = await response.text();
+  const payload: unknown = text ? JSON.parse(text) : null;
 
   if (!response.ok) {
-    let message = `Request failed with status ${response.status}.`;
-    try {
-      const body = await response.json();
-      if (body && typeof body.error === 'string') message = body.error;
-    } catch {
-      // Non-JSON error body; keep the generic message.
-    }
-    if (response.status === 409) throw new StaleDataError(message);
-    throw new ApiError(response.status, message);
+    const message =
+      payload && typeof payload === 'object' && 'error' in payload
+        ? String((payload as { error: unknown }).error)
+        : `Request failed with ${response.status}.`;
+    throw new ApiError(message, response.status);
   }
 
-  if (response.status === 204) return undefined as T;
-  return (await response.json()) as T;
+  return payload as T;
 }
 
-// ─── Accounts ────────────────────────────────────────────────────────────────
-
-export interface AccountInput {
-  companyName: string;
-  domain?: string;
-}
+const body = (value: unknown) => JSON.stringify(value);
 
 export const api = {
   listAccounts: () => request<AccountIndexEntry[]>('/api/accounts'),
 
-  getAccount: (id: ID) => request<AccountAggregate>(`/api/accounts/${id}`),
-
-  createAccount: (input: AccountInput) =>
-    request<MutationResponse>('/api/accounts', {
+  createAccount: (companyName: string, domain?: string) =>
+    request<AccountAggregate>('/api/accounts', {
       method: 'POST',
-      body: JSON.stringify(input),
+      body: body({ companyName, domain }),
     }),
 
-  updateAccount: (id: ID, rev: number, input: Partial<AccountInput>) =>
-    request<MutationResponse>(
-      `/api/accounts/${id}`,
-      { method: 'PATCH', body: JSON.stringify(input) },
-      rev
-    ),
+  getAccount: (id: string) => request<AccountAggregate>(`/api/accounts/${id}`),
 
-  deleteAccount: (id: ID) =>
-    request<{ success: boolean }>(`/api/accounts/${id}`, { method: 'DELETE' }),
+  updateAccount: (id: string, rev: number, patch: Record<string, unknown>) =>
+    request<AccountAggregate>(`/api/accounts/${id}`, {
+      method: 'PATCH',
+      rev,
+      body: body(patch),
+    }),
 
-  // ─── Evidence ──────────────────────────────────────────────────────────────
+  deleteAccount: (id: string) =>
+    request<{ deleted: boolean }>(`/api/accounts/${id}`, { method: 'DELETE' }),
 
-  addEvidence: (accountId: ID, rev: number, input: EvidenceInput) =>
-    request<MutationResponse>(
-      `/api/accounts/${accountId}/evidence`,
-      { method: 'POST', body: JSON.stringify(input) },
-      rev
-    ),
+  /**
+   * Research runs longer than a function invocation is guaranteed to live, so a
+   * timeout is not a failure — the caller polls the account until the evidence
+   * lands.
+   */
+  seed: (id: string) =>
+    request<AccountAggregate>(`/api/accounts/${id}/seed`, { method: 'POST' }),
 
-  updateEvidence: (
-    accountId: ID,
-    evidenceId: ID,
+  generateThesis: (id: string, rev: number) =>
+    request<AccountAggregate>(`/api/accounts/${id}/thesis/generate`, {
+      method: 'POST',
+      rev,
+    }),
+
+  create: (id: string, collection: string, rev: number, payload: unknown) =>
+    request<AccountAggregate>(`/api/accounts/${id}/${collection}`, {
+      method: 'POST',
+      rev,
+      body: body(payload),
+    }),
+
+  patch: (
+    id: string,
+    collection: string,
+    entityId: string,
     rev: number,
-    input: Partial<EvidenceInput>
+    payload: unknown
   ) =>
-    request<MutationResponse>(
-      `/api/accounts/${accountId}/evidence/${evidenceId}`,
-      { method: 'PATCH', body: JSON.stringify(input) },
-      rev
-    ),
+    request<AccountAggregate>(`/api/accounts/${id}/${collection}/${entityId}`, {
+      method: 'PATCH',
+      rev,
+      body: body(payload),
+    }),
 
-  deleteEvidence: (accountId: ID, evidenceId: ID, rev: number) =>
-    request<MutationResponse>(
-      `/api/accounts/${accountId}/evidence/${evidenceId}`,
-      { method: 'DELETE' },
-      rev
-    ),
-
-  // ─── Claims ────────────────────────────────────────────────────────────────
-
-  addClaim: (accountId: ID, rev: number, input: ClaimInput) =>
-    request<MutationResponse>(
-      `/api/accounts/${accountId}/claims`,
-      { method: 'POST', body: JSON.stringify(input) },
-      rev
-    ),
-
-  updateClaim: (accountId: ID, claimId: ID, rev: number, input: ClaimUpdate) =>
-    request<MutationResponse>(
-      `/api/accounts/${accountId}/claims/${claimId}`,
-      { method: 'PATCH', body: JSON.stringify(input) },
-      rev
-    ),
-
-  deleteClaim: (accountId: ID, claimId: ID, rev: number) =>
-    request<MutationResponse>(
-      `/api/accounts/${accountId}/claims/${claimId}`,
-      { method: 'DELETE' },
-      rev
-    ),
-
-  // ─── Stakeholders ──────────────────────────────────────────────────────────
-
-  addStakeholder: (accountId: ID, rev: number, input: StakeholderInput) =>
-    request<MutationResponse>(
-      `/api/accounts/${accountId}/stakeholders`,
-      { method: 'POST', body: JSON.stringify(input) },
-      rev
-    ),
-
-  updateStakeholder: (
-    accountId: ID,
-    stakeholderId: ID,
-    rev: number,
-    input: Partial<StakeholderInput>
-  ) =>
-    request<MutationResponse>(
-      `/api/accounts/${accountId}/stakeholders/${stakeholderId}`,
-      { method: 'PATCH', body: JSON.stringify(input) },
-      rev
-    ),
-
-  deleteStakeholder: (accountId: ID, stakeholderId: ID, rev: number) =>
-    request<MutationResponse>(
-      `/api/accounts/${accountId}/stakeholders/${stakeholderId}`,
-      { method: 'DELETE' },
-      rev
-    ),
-
-  // ─── Champion signals ──────────────────────────────────────────────────────
-
-  recordSignal: (accountId: ID, rev: number, input: SignalInput) =>
-    request<MutationResponse>(
-      `/api/accounts/${accountId}/signals`,
-      { method: 'POST', body: JSON.stringify(input) },
-      rev
-    ),
-
-  updateSignal: (
-    accountId: ID,
-    signalId: ID,
-    rev: number,
-    input: Partial<SignalInput>
-  ) =>
-    request<MutationResponse>(
-      `/api/accounts/${accountId}/signals/${signalId}`,
-      { method: 'PATCH', body: JSON.stringify(input) },
-      rev
-    ),
-
-  deleteSignal: (accountId: ID, signalId: ID, rev: number) =>
-    request<MutationResponse>(
-      `/api/accounts/${accountId}/signals/${signalId}`,
-      { method: 'DELETE' },
-      rev
-    ),
-
-  // ─── Actions ────────────────────────────────────────────────────────────────
-
-  addAction: (accountId: ID, rev: number, input: ActionInput) =>
-    request<MutationResponse>(
-      `/api/accounts/${accountId}/actions`,
-      { method: 'POST', body: JSON.stringify(input) },
-      rev
-    ),
-
-  updateAction: (accountId: ID, actionId: ID, rev: number, input: Partial<ActionInput>) =>
-    request<MutationResponse>(
-      `/api/accounts/${accountId}/actions/${actionId}`,
-      { method: 'PATCH', body: JSON.stringify(input) },
-      rev
-    ),
-
-  deleteAction: (accountId: ID, actionId: ID, rev: number) =>
-    request<MutationResponse>(
-      `/api/accounts/${accountId}/actions/${actionId}`,
-      { method: 'DELETE' },
-      rev
-    ),
-
-  // ─── Thesis generator ───────────────────────────────────────────────────────
-
-  generateThesis: (accountId: ID, rev: number) =>
-    request<MutationResponse & { insufficientEvidence?: boolean; reason?: string }>(
-      `/api/accounts/${accountId}/thesis/generate`,
-      { method: 'POST' },
-      rev
-    ),
-
-  // ─── Wedges ─────────────────────────────────────────────────────────────────
-
-  addWedge: (accountId: ID, rev: number, input: WedgeInput) =>
-    request<MutationResponse>(
-      `/api/accounts/${accountId}/wedges`,
-      { method: 'POST', body: JSON.stringify(input) },
-      rev
-    ),
-
-  updateWedge: (accountId: ID, wedgeId: ID, rev: number, input: Partial<WedgeInput>) =>
-    request<MutationResponse>(
-      `/api/accounts/${accountId}/wedges/${wedgeId}`,
-      { method: 'PATCH', body: JSON.stringify(input) },
-      rev
-    ),
-
-  deleteWedge: (accountId: ID, wedgeId: ID, rev: number) =>
-    request<MutationResponse>(
-      `/api/accounts/${accountId}/wedges/${wedgeId}`,
-      { method: 'DELETE' },
-      rev
-    ),
-
-  // ─── Account seeding ─────────────────────────────────────────────────────────
-
-  seedAccount: (accountId: ID, rev: number) =>
-    request<MutationResponse & { skipped?: boolean; reason?: string }>(
-      `/api/accounts/${accountId}/seed`,
-      { method: 'POST' },
-      rev
-    ),
+  remove: (id: string, collection: string, entityId: string, rev: number) =>
+    request<AccountAggregate>(`/api/accounts/${id}/${collection}/${entityId}`, {
+      method: 'DELETE',
+      rev,
+    }),
 };
-
-export interface EvidenceInput {
-  sourceType: SourceType;
-  sourceSystem?: SourceSystem;
-  sourceRef?: string;
-  externalUrl?: string;
-  externalId?: string;
-  verbatim: string;
-  asOf?: string;
-  confidential?: boolean;
-  stakeholderId?: ID;
-  status?: ClaimStatus;
-}
-
-export interface ClaimInput {
-  text: string;
-  status: ClaimStatus;
-  category: ClaimCategory;
-  evidenceIds?: ID[];
-  supersedesClaimId?: ID;
-  reason?: string;
-}
-
-export interface ClaimUpdate {
-  text?: string;
-  status?: ClaimStatus;
-  category?: ClaimCategory;
-  evidenceIds?: ID[];
-  revalidate?: boolean;
-  reason?: string;
-}
-
-export interface StakeholderInput {
-  name: string;
-  role: string;
-  businessUnit?: string;
-  emails?: string[];
-  linkedinUrl?: string;
-  mapRoles?: BuyerRole[];
-  priorities?: string[];
-  relevance?: string;
-  influence?: number;
-  relationshipStrength?: number;
-  posture?: Posture;
-  accessPath?: string;
-  whatToLearn?: string[];
-  introducedByStakeholderId?: ID;
-}
-
-export interface SignalInput {
-  stakeholderId: ID;
-  signalType: ChampionSignalType;
-  observed?: boolean;
-  evidenceId?: ID;
-  note?: string;
-}
-
-export interface ActionInput {
-  stakeholderId?: ID;
-  wedgeId?: ID;
-  objective: string;
-  channel?: Channel;
-  messageOrAction: string;
-  whyThisPersonNow: string;
-  desiredOutcome: string;
-  dependencyActionId?: ID;
-  ifSuccess?: string;
-  ifFail?: string;
-  horizon: Horizon;
-  dueAt?: string;
-  resolvesClaimIds?: ID[];
-  status?: string;
-  outcomeNote?: string;
-}
-
-export type { Claim, EvidenceItem };
-
-export interface WedgeInput {
-  useCase: string;
-  businessProblem: string;
-  technicalProblem: string;
-  whyFactory: string;
-  likelyOwnerRole?: string;
-  sponsorRole?: string;
-  evidenceIds?: ID[];
-  discoveryQuestion?: string;
-  disqualifiers?: string[];
-  status?: WedgeStatus;
-  disqualifiedReason?: string;
-  disqualifyingEvidenceId?: ID;
-}

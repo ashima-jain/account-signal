@@ -1,216 +1,182 @@
-/**
- * Champion signal recording.
- *
- * A signal counts toward the champion tier only when it is observed AND cites
- * evidence that still exists. The server enforces the evidence requirement;
- * the tier itself is computed in champion.ts as a pure function.
- */
-
 import type { Config, Context } from '@netlify/functions';
-import { appendEvent, mutateAggregate, newEvent, newId, readAggregate } from '../lib/store';
 import {
-  BadRequestError,
-  error,
-  expectedRev,
-  jsonWithRev,
-  mutationResult,
+  aggregateResponse,
+  errorResponse,
+  expectedRevOf,
+  handle,
+  InvariantViolation,
+  json,
+  methodNotAllowed,
+  oneOf,
+  optionalString,
   readJson,
   requireString,
-  toResponse,
 } from '../lib/http';
+import { appendEvent, mutateAggregate, newId, readAggregate } from '../lib/store';
+import { championTier } from '../../src/domain/champion';
 import {
   CHAMPION_SIGNALS,
+  CHAMPION_SIGNAL_LABELS,
+  type AccountAggregate,
   type ChampionSignal,
-  type ChampionSignalType,
 } from '../../src/domain/types';
-import { championTier } from '../../src/domain/champion';
 
-export const config: Config = {
-  path: [
-    '/api/accounts/:accountId/signals',
-    '/api/accounts/:accountId/signals/:signalId',
-  ],
-};
+export default async (request: Request, context: Context): Promise<Response> =>
+  handle(async () => {
+    const { id, sigid } = context.params;
 
-export default async (req: Request, context: Context): Promise<Response> => {
-  const accountId = context.params.accountId;
-  const signalId = context.params.signalId;
-
-  try {
-    if (!accountId) return error(400, 'Missing account id.');
-
-    if (!signalId) {
-      if (req.method === 'GET') return await listSignals(accountId);
-      if (req.method === 'POST') return await recordSignal(req, accountId);
-      return error(405, `${req.method} is not supported on this route.`);
+    if (request.method === 'GET') {
+      const loaded = await readAggregate(id);
+      if (!loaded) return errorResponse('Account not found.', 404);
+      return json(loaded.aggregate.signals);
     }
 
-    if (req.method === 'PATCH' || req.method === 'PUT') {
-      return await updateSignal(req, accountId, signalId);
-    }
-    if (req.method === 'DELETE') return await removeSignal(req, accountId, signalId);
-    return error(405, `${req.method} is not supported on this route.`);
-  } catch (err) {
-    return toResponse(err);
-  }
-};
+    if (request.method === 'POST') return recordSignal(request, id);
+    if (request.method === 'PATCH' && sigid) return updateSignal(request, id, sigid);
+    if (request.method === 'DELETE' && sigid) return removeSignal(request, id, sigid);
+    return methodNotAllowed(request.method);
+  });
 
-function parseSignalType(value: unknown): ChampionSignalType {
-  if (typeof value !== 'string' || !CHAMPION_SIGNALS.includes(value as ChampionSignalType)) {
-    throw new BadRequestError(`"signalType" must be one of: ${CHAMPION_SIGNALS.join(', ')}.`);
-  }
-  return value as ChampionSignalType;
-}
-
-async function listSignals(accountId: string): Promise<Response> {
-  const loaded = await readAggregate(accountId);
-  if (!loaded) return error(404, 'Account not found.');
-  return jsonWithRev(loaded.aggregate.signals, loaded.aggregate.rev);
-}
-
-async function recordSignal(req: Request, accountId: string): Promise<Response> {
-  const body = await readJson<Record<string, unknown>>(req);
-
-  const stakeholderId = requireString(body.stakeholderId, 'stakeholderId');
-  const signalType = parseSignalType(body.signalType);
-  const observed = body.observed !== false;
-  const evidenceId = typeof body.evidenceId === 'string' ? body.evidenceId : undefined;
-  const note = typeof body.note === 'string' ? body.note.trim() || undefined : undefined;
-
-  // An observed signal must cite evidence. This is the rule that makes
-  // self-reported enthusiasm unable to inflate the champion tier.
-  if (observed && !evidenceId) {
-    throw new BadRequestError(
-      'An observed signal must cite evidence. Record what they did or said, then link it.'
+/**
+ * An observed signal without a citation is a feeling, and feelings do not move
+ * a champion tier. Recording one is rejected rather than silently discounted.
+ */
+function assertCitation(
+  signal: Pick<ChampionSignal, 'observed' | 'evidenceId'>,
+  aggregate: AccountAggregate
+): void {
+  if (!signal.observed) return;
+  if (!signal.evidenceId) {
+    throw new InvariantViolation(
+      'An observed signal must cite the evidence that shows it happened.'
     );
   }
+  if (!aggregate.evidence.some((e) => e.id === signal.evidenceId)) {
+    throw new InvariantViolation('The cited evidence does not exist on this account.');
+  }
+}
+
+async function recordSignal(request: Request, id: string): Promise<Response> {
+  const body = await readJson<Record<string, unknown>>(request);
 
   const signal: ChampionSignal = {
     id: newId(),
-    stakeholderId,
-    signalType,
-    observed,
-    evidenceId: observed ? evidenceId : undefined,
-    observedAt: observed ? new Date().toISOString() : undefined,
-    note,
+    stakeholderId: requireString(body.stakeholderId, 'stakeholderId'),
+    signalType: oneOf(body.signalType, CHAMPION_SIGNALS, 'signalType'),
+    observed: body.observed !== false,
+    evidenceId: optionalString(body.evidenceId, 'evidenceId'),
+    observedAt: new Date().toISOString(),
+    note: optionalString(body.note, 'note'),
   };
 
-  const outcome = await mutateAggregate(accountId, expectedRev(req), (aggregate) => {
-    const stakeholder = aggregate.stakeholders.find((s) => s.id === stakeholderId);
-    if (!stakeholder) throw new BadRequestError('stakeholderId does not exist on this account.');
-
-    if (evidenceId) {
-      const evidence = aggregate.evidence.find((e) => e.id === evidenceId);
-      if (!evidence) throw new BadRequestError('evidenceId does not exist on this account.');
+  let missing = false;
+  const updated = await mutateAggregate(id, expectedRevOf(request), (aggregate) => {
+    const person = aggregate.stakeholders.find((s) => s.id === signal.stakeholderId);
+    if (!person) {
+      missing = true;
+      return;
     }
+    assertCitation(signal, aggregate);
 
-    // Replace any existing signal of the same type for this stakeholder.
-    const existing = aggregate.signals.find(
-      (sig) => sig.stakeholderId === stakeholderId && sig.signalType === signalType
-    );
-    if (existing) {
-      existing.observed = signal.observed;
-      existing.evidenceId = signal.evidenceId;
-      existing.observedAt = signal.observedAt;
-      existing.note = signal.note;
-    } else {
-      aggregate.signals.push(signal);
-    }
+    const before = championTier(person.id, aggregate.signals, aggregate.evidence);
 
-    const tierBefore = championTier(
-      aggregate.signals.filter((sig) => sig.stakeholderId === stakeholderId),
-      aggregate.evidence
+    // One record per person per signal type: recording it again is a correction.
+    aggregate.signals = aggregate.signals.filter(
+      (s) => !(s.stakeholderId === signal.stakeholderId && s.signalType === signal.signalType)
     );
+    aggregate.signals.push(signal);
 
     appendEvent(
       aggregate,
-      newEvent(
-        'signal_recorded',
-        `${stakeholder.name}: ${signalType} ${observed ? 'observed' : 'unobserved'}.`,
-        { entityRef: `signal:${existing?.id ?? signal.id}` }
-      )
+      'signal_recorded',
+      `${person.name}: ${CHAMPION_SIGNAL_LABELS[signal.signalType]} ${signal.observed ? 'observed' : 'not observed'}.`,
+      { entityRef: `stakeholder:${person.id}`, reason: signal.note }
     );
 
-    return { signal: existing ?? signal, tier: tierBefore };
+    const after = championTier(person.id, aggregate.signals, aggregate.evidence);
+    if (after !== before) {
+      appendEvent(aggregate, 'champion_tier_changed', `${person.name}: ${before} → ${after}.`, {
+        entityRef: `stakeholder:${person.id}`,
+      });
+    }
   });
 
-  if (!outcome) return error(404, 'Account not found.');
-  return mutationResult(outcome.aggregate, outcome.result.signal.id, 201);
+  if (!updated) return errorResponse('Account not found.', 404);
+  if (missing) return errorResponse('Stakeholder not found.', 404);
+  return aggregateResponse(updated, 201);
 }
 
-async function updateSignal(
-  req: Request,
-  accountId: string,
-  signalId: string
-): Promise<Response> {
-  const body = await readJson<Record<string, unknown>>(req);
+async function updateSignal(request: Request, id: string, sigid: string): Promise<Response> {
+  const body = await readJson<Record<string, unknown>>(request);
 
-  const outcome = await mutateAggregate(accountId, expectedRev(req), (aggregate) => {
-    const signal = aggregate.signals.find((sig) => sig.id === signalId);
-    if (!signal) return null;
-
-    if (body.observed !== undefined) {
-      signal.observed = body.observed === true;
-      if (signal.observed && !signal.evidenceId) {
-        throw new BadRequestError(
-          'An observed signal must cite evidence. Link evidence first.'
-        );
-      }
-      signal.observedAt = signal.observed ? new Date().toISOString() : undefined;
-    }
-    if (body.evidenceId !== undefined) {
-      const evidenceId = typeof body.evidenceId === 'string' ? body.evidenceId : undefined;
-      if (evidenceId) {
-        const evidence = aggregate.evidence.find((e) => e.id === evidenceId);
-        if (!evidence) throw new BadRequestError('evidenceId does not exist on this account.');
-      }
-      signal.evidenceId = evidenceId;
-    }
-    if (body.note !== undefined) {
-      signal.note = typeof body.note === 'string' ? body.note.trim() || undefined : undefined;
+  let missing = false;
+  const updated = await mutateAggregate(id, expectedRevOf(request), (aggregate) => {
+    const signal = aggregate.signals.find((s) => s.id === sigid);
+    if (!signal) {
+      missing = true;
+      return;
     }
 
-    const stakeholder = aggregate.stakeholders.find((s) => s.id === signal.stakeholderId);
+    const before = championTier(signal.stakeholderId, aggregate.signals, aggregate.evidence);
+
+    const proposed = {
+      observed: body.observed !== undefined ? body.observed === true : signal.observed,
+      evidenceId:
+        body.evidenceId !== undefined
+          ? optionalString(body.evidenceId, 'evidenceId')
+          : signal.evidenceId,
+    };
+    assertCitation(proposed, aggregate);
+
+    signal.observed = proposed.observed;
+    signal.evidenceId = proposed.evidenceId;
+    if (body.note !== undefined) signal.note = optionalString(body.note, 'note');
+    signal.observedAt = new Date().toISOString();
+
+    const person = aggregate.stakeholders.find((s) => s.id === signal.stakeholderId);
     appendEvent(
       aggregate,
-      newEvent(
-        'signal_recorded',
-        `${stakeholder?.name ?? 'Unknown'}: ${signal.signalType} updated.`,
-        { entityRef: `signal:${signalId}` }
-      )
+      'signal_recorded',
+      `${person?.name ?? 'Stakeholder'}: ${CHAMPION_SIGNAL_LABELS[signal.signalType]} ${signal.observed ? 'observed' : 'not observed'}.`,
+      { entityRef: `stakeholder:${signal.stakeholderId}` }
     );
 
-    return signal;
+    const after = championTier(signal.stakeholderId, aggregate.signals, aggregate.evidence);
+    if (after !== before) {
+      appendEvent(
+        aggregate,
+        'champion_tier_changed',
+        `${person?.name ?? 'Stakeholder'}: ${before} → ${after}.`,
+        { entityRef: `stakeholder:${signal.stakeholderId}` }
+      );
+    }
   });
 
-  if (!outcome) return error(404, 'Account not found.');
-  if (!outcome.result) return error(404, 'Signal not found.');
-  return mutationResult(outcome.aggregate, signalId);
+  if (!updated || missing) return errorResponse('Signal not found.', 404);
+  return aggregateResponse(updated);
 }
 
-async function removeSignal(
-  req: Request,
-  accountId: string,
-  signalId: string
-): Promise<Response> {
-  const outcome = await mutateAggregate(accountId, expectedRev(req), (aggregate) => {
-    const signal = aggregate.signals.find((sig) => sig.id === signalId);
-    if (!signal) return null;
-
-    aggregate.signals = aggregate.signals.filter((sig) => sig.id !== signalId);
-    const stakeholder = aggregate.stakeholders.find((s) => s.id === signal.stakeholderId);
+async function removeSignal(request: Request, id: string, sigid: string): Promise<Response> {
+  let missing = false;
+  const updated = await mutateAggregate(id, expectedRevOf(request), (aggregate) => {
+    const signal = aggregate.signals.find((s) => s.id === sigid);
+    if (!signal) {
+      missing = true;
+      return;
+    }
+    aggregate.signals = aggregate.signals.filter((s) => s.id !== sigid);
     appendEvent(
       aggregate,
-      newEvent(
-        'signal_recorded',
-        `${stakeholder?.name ?? 'Unknown'}: ${signal.signalType} removed.`,
-        { entityRef: `signal:${signalId}` }
-      )
+      'signal_removed',
+      `${CHAMPION_SIGNAL_LABELS[signal.signalType]} removed.`,
+      { entityRef: `stakeholder:${signal.stakeholderId}` }
     );
-    return signal;
   });
 
-  if (!outcome) return error(404, 'Account not found.');
-  if (!outcome.result) return error(404, 'Signal not found.');
-  return mutationResult(outcome.aggregate, signalId);
+  if (!updated || missing) return errorResponse('Signal not found.', 404);
+  return aggregateResponse(updated);
 }
+
+export const config: Config = {
+  path: ['/api/accounts/:id/signals', '/api/accounts/:id/signals/:sigid'],
+};
