@@ -202,7 +202,7 @@ const SEED_TOOL: Anthropic.Tool = {
 interface SeedEvidence {
   category: EvidenceCategory;
   signalType?: string;
-  verbatim: string;
+  verbatim?: string;
   sourceType: SourceType;
   sourceRef?: string;
   externalUrl?: string;
@@ -213,7 +213,7 @@ interface SeedEvidence {
   nextDiscoveryQuestion?: string;
 }
 
-interface SeedResult {
+export interface SeedResult {
   whyItMatters: string;
   evidence: SeedEvidence[];
   claims: {
@@ -309,11 +309,16 @@ export default async (request: Request, context: Context): Promise<Response> =>
     return aggregateResponse(updated);
   });
 
-function applySeed(aggregate: AccountAggregate, result: SeedResult): void {
+export function applySeed(aggregate: AccountAggregate, result: SeedResult): void {
   const now = new Date().toISOString();
   const today = now.slice(0, 10);
 
-  const evidence: EvidenceItem[] = (result.evidence ?? []).map((item) => {
+  // An item with nothing quoted is not evidence, whatever the schema asked for.
+  // Dropped items stay as holes in `mapped` so the model's positional
+  // evidenceRefs resolve to nothing instead of sliding onto a neighbour.
+  const mapped = (result.evidence ?? []).map((item): EvidenceItem | undefined => {
+    const verbatim = typeof item.verbatim === 'string' ? item.verbatim.trim() : '';
+    if (!verbatim) return undefined;
     const externalUrl = sanitizeHttpUrl(item.externalUrl);
     return {
       id: newId(),
@@ -321,7 +326,7 @@ function applySeed(aggregate: AccountAggregate, result: SeedResult): void {
       sourceSystem: 'web_research',
       sourceRef: item.sourceRef,
       externalUrl,
-      verbatim: item.verbatim,
+      verbatim,
       capturedAt: now,
       asOf: safeDate(item.asOf, today),
       confidential: false,
@@ -335,8 +340,9 @@ function applySeed(aggregate: AccountAggregate, result: SeedResult): void {
       status: seedEvidenceStatus(item, externalUrl),
     };
   });
+  const evidence: EvidenceItem[] = mapped.filter((item): item is EvidenceItem => item !== undefined);
 
-  const idOf = (ref: number): string | undefined => evidence[ref]?.id;
+  const idOf = (ref: number): string | undefined => mapped[ref]?.id;
   const refsToIds = (refs: number[] | undefined): string[] =>
     (refs ?? []).map(idOf).filter((id): id is string => Boolean(id));
 
