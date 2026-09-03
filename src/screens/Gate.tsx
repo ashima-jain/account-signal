@@ -37,9 +37,7 @@ export default function Gate({ children }: { children: ReactNode }) {
     <div className="shell">
       <div className="topbar">
         <div>
-          <h1 className="brand">
-            Account Signal<span>evidence-first account execution for Devin</span>
-          </h1>
+          <h1 className="brand">Account Signal</h1>
         </div>
       </div>
       <div className="card">

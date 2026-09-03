@@ -22,51 +22,58 @@ import {
 
 export default function EvidenceLedger() {
   const { aggregate } = useAccount();
-  const [category, setCategory] = useState<EvidenceCategory | 'all'>('all');
 
-  const visible =
-    category === 'all'
-      ? aggregate.evidence
-      : aggregate.evidence.filter((e) => e.evidenceCategory === category);
+  // Research that predates the four criteria, or that arrives uncategorised,
+  // still has to be visible — it is evidence claims may already cite.
+  const uncategorised = aggregate.evidence.filter((item) => !item.evidenceCategory);
 
   return (
     <>
-      <div className="card">
-        <div className="row between">
-          <div>
-            <h2>Evidence ledger</h2>
-            <p className="dim">
-              Everything downstream — claims, wedges, champion signals — points back at a row in
-              here. Delete a row and whatever rested on it is demoted.
-            </p>
-          </div>
-          <select
-            style={{ width: 'auto' }}
-            value={category}
-            onChange={(e) => setCategory(e.target.value as EvidenceCategory | 'all')}
-          >
-            <option value="all">All criteria</option>
-            {EVIDENCE_CATEGORIES.map((c) => (
-              <option key={c} value={c}>
-                {EVIDENCE_CATEGORY_LABELS[c]}
-              </option>
-            ))}
-          </select>
-        </div>
-        {category !== 'all' ? (
-          <p className="muted" style={{ marginTop: 8 }}>
-            {EVIDENCE_CATEGORY_QUESTIONS[category]}
-          </p>
-        ) : null}
+      <p className="dim">
+        Everything downstream — claims, wedges, champion signals — points back at a row in here.
+        Delete a row and whatever rested on it is demoted.
+      </p>
+
+      {EVIDENCE_CATEGORIES.map((category) => (
+        <CategorySection
+          key={category}
+          heading={EVIDENCE_CATEGORY_LABELS[category]}
+          question={EVIDENCE_CATEGORY_QUESTIONS[category]}
+          items={aggregate.evidence.filter((item) => item.evidenceCategory === category)}
+        />
+      ))}
+
+      {uncategorised.length > 0 ? (
+        <CategorySection heading="Uncategorised" items={uncategorised} />
+      ) : null}
+
+      <div style={{ marginTop: 32 }}>
+        <AddEvidence />
       </div>
+    </>
+  );
+}
 
-      {visible.length === 0 ? (
-        <Empty>Nothing recorded under this criterion yet.</Empty>
+function CategorySection({
+  heading,
+  question,
+  items,
+}: {
+  heading: string;
+  question?: string;
+  items: EvidenceItem[];
+}) {
+  return (
+    <>
+      <div className="section">
+        <h2>{heading}</h2>
+        {question ? <p className="dim">{question}</p> : null}
+      </div>
+      {items.length === 0 ? (
+        <Empty>Nothing recorded against this criterion yet.</Empty>
       ) : (
-        visible.map((item) => <EvidenceRow key={item.id} item={item} />)
+        items.map((item) => <EvidenceRow key={item.id} item={item} />)
       )}
-
-      <AddEvidence />
     </>
   );
 }
@@ -82,11 +89,6 @@ function EvidenceRow({ item }: { item: EvidenceItem }) {
         <div className="spread">
           <div className="row">
             <span className="badge">{SOURCE_TYPE_LABELS[item.sourceType]}</span>
-            {item.evidenceCategory ? (
-              <span className="badge">
-                {EVIDENCE_CATEGORY_LABELS[item.evidenceCategory]}
-              </span>
-            ) : null}
             <StatusBadge status={item.status} />
             {item.confidential ? <span className="badge stale">Confidential</span> : null}
           </div>

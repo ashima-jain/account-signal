@@ -4,7 +4,13 @@ import { api } from '../api';
 import { messageOf } from '../useAccount';
 import { Empty, Field } from '../components/ui';
 import { formatDate } from '../format';
-import { DEAL_STAGE_LABELS, type AccountIndexEntry } from '../domain/types';
+import {
+  DEAL_STAGE_LABELS,
+  EVIDENCE_CATEGORIES,
+  EVIDENCE_CATEGORY_LABELS,
+  EVIDENCE_CATEGORY_QUESTIONS,
+  type AccountIndexEntry,
+} from '../domain/types';
 
 export default function CommandCenter() {
   const [accounts, setAccounts] = useState<AccountIndexEntry[] | null>(null);
@@ -49,13 +55,7 @@ export default function CommandCenter() {
     <div className="shell">
       <div className="topbar">
         <div>
-          <h1 className="brand">
-            Account Signal<span>evidence-first account execution for Devin</span>
-          </h1>
-          <p className="muted" style={{ marginTop: 6 }}>
-            Research is the model&apos;s job. Judgment is the code&apos;s job. Nothing here is a
-            fact until something you can point at says so.
-          </p>
+          <h1 className="brand">Account Signal</h1>
         </div>
       </div>
 
@@ -63,11 +63,7 @@ export default function CommandCenter() {
 
       <div className="card">
         <h2>Add an account</h2>
-        <p className="dim">
-          Claude researches the company across engineering scale, Devin use-case fit, urgency and
-          right to win, then fills the ledger with what it can cite.
-        </p>
-        <form onSubmit={addAccount} style={{ marginTop: 10 }}>
+        <form onSubmit={addAccount}>
           <div className="grid two">
             <Field label="Company">
               <input
@@ -91,7 +87,7 @@ export default function CommandCenter() {
         </form>
       </div>
 
-      <div className="grid four" style={{ marginTop: 16 }}>
+      <div className="grid four" style={{ marginTop: 32 }}>
         <Metric label="Accounts" value={accounts?.length ?? 0} />
         <Metric
           label="Validated wedges"
@@ -104,7 +100,7 @@ export default function CommandCenter() {
         <Metric label="Need attention" value={needsAttention} />
       </div>
 
-      <div className="card" style={{ marginTop: 16 }}>
+      <div className="card" style={{ marginTop: 32 }}>
         <h2>Portfolio</h2>
         {accounts === null ? (
           <p className="muted">Loading…</p>
@@ -147,6 +143,116 @@ export default function CommandCenter() {
             </tbody>
           </table>
         )}
+      </div>
+
+      <HowToRead />
+    </div>
+  );
+}
+
+/**
+ * The tool is opinionated in ways a first-time reader cannot guess — why a
+ * claim refuses to be a fact, why the ranked action is the one on screen.
+ * That contract is stated once, here, on the page everyone lands on.
+ */
+function HowToRead() {
+  return (
+    <div style={{ marginTop: 56 }}>
+      <div className="section">
+        <h2>How to read this</h2>
+      </div>
+      <p className="muted">
+        Type a company. Claude researches it and writes what it finds into the evidence ledger.
+        Every judgment after that is the code&apos;s, computed from that evidence and shown with
+        its reasoning.
+      </p>
+
+      <div className="card" style={{ marginTop: 20 }}>
+        <h2>The four questions research answers</h2>
+        <dl className="deflist">
+          {EVIDENCE_CATEGORIES.map((category) => (
+            <div key={category}>
+              <dt>{EVIDENCE_CATEGORY_LABELS[category]}</dt>
+              <dd className="muted">{EVIDENCE_CATEGORY_QUESTIONS[category]}</dd>
+            </div>
+          ))}
+        </dl>
+        <p className="dim" style={{ margin: '12px 0 0' }}>
+          Right to Win cannot be settled from public sources. Until you have spoken to someone it
+          stays a hypothesis, however confident the research sounds.
+        </p>
+      </div>
+
+      <div className="card">
+        <h2>What the labels mean</h2>
+        <dl className="deflist">
+          <div>
+            <dt className="badge FACT">Fact</dt>
+            <dd className="muted">
+              Cites something verifiable: a link, a document, a quote from a real conversation. An
+              inference can never be one.
+            </dd>
+          </div>
+          <div>
+            <dt className="badge HYPOTHESIS">Hypothesis</dt>
+            <dd className="muted">
+              Plausible, partly evidenced, still yours to prove. Most of a new account is this.
+            </dd>
+          </div>
+          <div>
+            <dt className="badge UNKNOWN">Unknown</dt>
+            <dd className="muted">
+              A named gap that cites nothing. Unknowns are the raw material of the next action.
+            </dd>
+          </div>
+        </dl>
+        <p className="dim" style={{ margin: '12px 0 0' }}>
+          Delete evidence and everything resting on it is demoted, with the reason written to the
+          change log.
+        </p>
+      </div>
+
+      <div className="card">
+        <h2>Working an account</h2>
+        <dl className="deflist">
+          <div>
+            <dt>Thesis</dt>
+            <dd className="muted">
+              Why this account, in one screen: what is known, what is assumed, what is missing.
+            </dd>
+          </div>
+          <div>
+            <dt>Evidence</dt>
+            <dd className="muted">
+              The spine, grouped by the four criteria. Everything else cites a row here.
+            </dd>
+          </div>
+          <div>
+            <dt>Stakeholders</dt>
+            <dd className="muted">
+              The buyer map and an eight-signal champion test. Only cited signals move a contact up
+              the ladder.
+            </dd>
+          </div>
+          <div>
+            <dt>Wedges</dt>
+            <dd className="muted">
+              The Devin work to land first — migrations, test backfill, CVE upgrades, bug
+              burn-down. Candidate, then testing, then validated.
+            </dd>
+          </div>
+          <div>
+            <dt>Actions</dt>
+            <dd className="muted">
+              One ranked next best action, from evidence coverage, champion progression, wedge
+              maturity, staleness and stage. Critical blocks the deal; low is an optimisation.
+            </dd>
+          </div>
+          <div>
+            <dt>Change log</dt>
+            <dd className="muted">What changed, when and why, including every demotion.</dd>
+          </div>
+        </dl>
       </div>
     </div>
   );
