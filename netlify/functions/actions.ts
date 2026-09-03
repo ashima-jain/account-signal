@@ -1,230 +1,161 @@
-/**
- * Action CRUD.
- *
- * Actions serve both the 30-day plan (bucketed by horizon) and the Next Best
- * Action (top-ranked open action). The NBA itself is computed client-side
- * from the aggregate, not stored, so the suggestion and the plan can never
- * disagree.
- */
-
 import type { Config, Context } from '@netlify/functions';
-import { appendEvent, mutateAggregate, newEvent, newId, readAggregate } from '../lib/store';
 import {
-  BadRequestError,
-  error,
-  expectedRev,
-  jsonWithRev,
-  mutationResult,
+  aggregateResponse,
+  errorResponse,
+  expectedRevOf,
+  handle,
+  InvariantViolation,
+  isoDate,
+  json,
+  methodNotAllowed,
+  NotFound,
+  oneOf,
+  optionalString,
   readJson,
   requireString,
-  toResponse,
+  stringArray,
 } from '../lib/http';
+import { appendEvent, mutateAggregate, newId, readAggregate } from '../lib/store';
+import { nextBestActions } from '../../src/domain/nba';
 import {
   CHANNELS,
   HORIZONS,
   type Action,
   type ActionStatus,
-  type Channel,
-  type Horizon,
-  type ID,
 } from '../../src/domain/types';
 
-export const config: Config = {
-  path: [
-    '/api/accounts/:accountId/actions',
-    '/api/accounts/:accountId/actions/:actionId',
-  ],
-};
+const ACTION_STATUSES: ActionStatus[] = ['open', 'done', 'dropped'];
 
-const STATUSES: ActionStatus[] = ['open', 'done', 'dropped'];
+export default async (request: Request, context: Context): Promise<Response> =>
+  handle(request, async () => {
+    const { id, aid } = context.params;
 
-export default async (req: Request, context: Context): Promise<Response> => {
-  const accountId = context.params.accountId;
-  const actionId = context.params.actionId;
-
-  try {
-    if (!accountId) return error(400, 'Missing account id.');
-
-    if (!actionId) {
-      if (req.method === 'GET') return await listActions(accountId);
-      if (req.method === 'POST') return await addAction(req, accountId);
-      return error(405, `${req.method} is not supported on this route.`);
+    if (request.method === 'GET') {
+      const loaded = await readAggregate(id);
+      if (!loaded) return errorResponse('Account not found.', 404);
+      // The ranked gaps ride along so the client never recomputes them from a
+      // partial view of the account.
+      return json({
+        actions: loaded.aggregate.actions,
+        nba: nextBestActions(loaded.aggregate),
+      });
     }
 
-    if (req.method === 'PATCH' || req.method === 'PUT') {
-      return await updateAction(req, accountId, actionId);
-    }
-    if (req.method === 'DELETE') return await removeAction(req, accountId, actionId);
-    return error(405, `${req.method} is not supported on this route.`);
-  } catch (err) {
-    return toResponse(err);
-  }
-};
+    if (request.method === 'POST') return addAction(request, id);
+    if (request.method === 'PATCH' && aid) return updateAction(request, id, aid);
+    if (request.method === 'DELETE' && aid) return removeAction(request, id, aid);
+    return methodNotAllowed(request.method);
+  });
 
-function parseChannel(value: unknown): Channel {
-  if (value === undefined) return 'other';
-  if (typeof value !== 'string' || !CHANNELS.includes(value as Channel)) {
-    throw new BadRequestError(`"channel" must be one of: ${CHANNELS.join(', ')}.`);
-  }
-  return value as Channel;
-}
-
-function parseHorizon(value: unknown): Horizon {
-  if (typeof value !== 'string' || !HORIZONS.includes(value as Horizon)) {
-    throw new BadRequestError(`"horizon" must be one of: ${HORIZONS.join(', ')}.`);
-  }
-  return value as Horizon;
-}
-
-function parseStatus(value: unknown): ActionStatus {
-  if (value === undefined) return 'open';
-  if (typeof value !== 'string' || !STATUSES.includes(value as ActionStatus)) {
-    throw new BadRequestError(`"status" must be one of: ${STATUSES.join(', ')}.`);
-  }
-  return value as ActionStatus;
-}
-
-function parseIdArray(value: unknown, field: string): ID[] {
-  if (value === undefined || value === null) return [];
-  if (!Array.isArray(value) || value.some((v) => typeof v !== 'string')) {
-    throw new BadRequestError(`"${field}" must be an array of strings.`);
-  }
-  return value as ID[];
-}
-
-function optionalString(value: unknown, field: string): string | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (typeof value !== 'string') throw new BadRequestError(`"${field}" must be a string.`);
-  return value.trim() || undefined;
-}
-
-async function listActions(accountId: string): Promise<Response> {
-  const loaded = await readAggregate(accountId);
-  if (!loaded) return error(404, 'Account not found.');
-  return jsonWithRev(loaded.aggregate.actions, loaded.aggregate.rev);
-}
-
-async function addAction(req: Request, accountId: string): Promise<Response> {
-  const body = await readJson<Record<string, unknown>>(req);
-  const now = new Date().toISOString();
+async function addAction(request: Request, id: string): Promise<Response> {
+  const body = await readJson<Record<string, unknown>>(request);
 
   const action: Action = {
     id: newId(),
     stakeholderId: optionalString(body.stakeholderId, 'stakeholderId'),
     wedgeId: optionalString(body.wedgeId, 'wedgeId'),
     objective: requireString(body.objective, 'objective'),
-    channel: parseChannel(body.channel),
-    messageOrAction: requireString(body.messageOrAction, 'messageOrAction'),
-    whyThisPersonNow: requireString(body.whyThisPersonNow, 'whyThisPersonNow'),
-    desiredOutcome: requireString(body.desiredOutcome, 'desiredOutcome'),
-    dependencyActionId: optionalString(body.dependencyActionId, 'dependencyActionId'),
-    ifSuccess: optionalString(body.ifSuccess, 'ifSuccess'),
-    ifFail: optionalString(body.ifFail, 'ifFail'),
-    horizon: parseHorizon(body.horizon),
+    channel: oneOf(body.channel, CHANNELS, 'channel', 'email'),
+    messageOrAction: optionalString(body.messageOrAction, 'messageOrAction') ?? '',
+    whyThisPersonNow: optionalString(body.whyThisPersonNow, 'whyThisPersonNow') ?? '',
+    desiredOutcome: optionalString(body.desiredOutcome, 'desiredOutcome') ?? '',
+    horizon: oneOf(body.horizon, HORIZONS, 'horizon', 'this_week'),
     status: 'open',
-    dueAt: optionalString(body.dueAt, 'dueAt'),
-    resolvesClaimIds: parseIdArray(body.resolvesClaimIds, 'resolvesClaimIds'),
-    createdAt: now,
+    dueAt: body.dueAt ? isoDate(body.dueAt, 'dueAt') : undefined,
+    resolvesClaimIds: stringArray(body.resolvesClaimIds, 'resolvesClaimIds'),
+    createdAt: new Date().toISOString(),
   };
 
-  const outcome = await mutateAggregate(accountId, expectedRev(req), (aggregate) => {
-    if (action.stakeholderId) {
-      const exists = aggregate.stakeholders.some((s) => s.id === action.stakeholderId);
-      if (!exists) throw new BadRequestError('stakeholderId does not exist on this account.');
-    }
-    if (action.dependencyActionId) {
-      const exists = aggregate.actions.some((a) => a.id === action.dependencyActionId);
-      if (!exists) throw new BadRequestError('dependencyActionId does not exist.');
-    }
-
-    aggregate.actions.push(action);
-    appendEvent(
-      aggregate,
-      newEvent('action_added', `Action added: ${action.objective}.`, {
-        entityRef: `action:${action.id}`,
-      })
+  const updated = await mutateAggregate(id, expectedRevOf(request), (aggregate) => {
+    const unknown = action.resolvesClaimIds.filter(
+      (cid) => !aggregate.claims.some((c) => c.id === cid)
     );
-    return action;
+    if (unknown.length > 0) {
+      throw new InvariantViolation(`Unknown claim ids: ${unknown.join(', ')}.`);
+    }
+    aggregate.actions.push(action);
+    appendEvent(aggregate, 'action_added', action.objective, {
+      entityRef: `action:${action.id}`,
+    });
   });
 
-  if (!outcome) return error(404, 'Account not found.');
-  return mutationResult(outcome.aggregate, outcome.result.id, 201);
+  if (!updated) return errorResponse('Account not found.', 404);
+  return aggregateResponse(updated, 201);
 }
 
-async function updateAction(
-  req: Request,
-  accountId: string,
-  actionId: string
-): Promise<Response> {
-  const body = await readJson<Record<string, unknown>>(req);
+async function updateAction(request: Request, id: string, aid: string): Promise<Response> {
+  const body = await readJson<Record<string, unknown>>(request);
 
-  const outcome = await mutateAggregate(accountId, expectedRev(req), (aggregate) => {
-    const action = aggregate.actions.find((a) => a.id === actionId);
-    if (!action) return null;
+  const updated = await mutateAggregate(id, expectedRevOf(request), (aggregate) => {
+    const action = aggregate.actions.find((a) => a.id === aid);
+    if (!action) throw new NotFound('Action not found.');
 
     const previousStatus = action.status;
 
     if (body.objective !== undefined) action.objective = requireString(body.objective, 'objective');
-    if (body.channel !== undefined) action.channel = parseChannel(body.channel);
+    if (body.channel !== undefined) {
+      action.channel = oneOf(body.channel, CHANNELS, 'channel', action.channel);
+    }
     if (body.messageOrAction !== undefined) {
-      action.messageOrAction = requireString(body.messageOrAction, 'messageOrAction');
+      action.messageOrAction = optionalString(body.messageOrAction, 'messageOrAction') ?? '';
     }
     if (body.whyThisPersonNow !== undefined) {
-      action.whyThisPersonNow = requireString(body.whyThisPersonNow, 'whyThisPersonNow');
+      action.whyThisPersonNow = optionalString(body.whyThisPersonNow, 'whyThisPersonNow') ?? '';
     }
     if (body.desiredOutcome !== undefined) {
-      action.desiredOutcome = requireString(body.desiredOutcome, 'desiredOutcome');
+      action.desiredOutcome = optionalString(body.desiredOutcome, 'desiredOutcome') ?? '';
     }
-    if (body.horizon !== undefined) action.horizon = parseHorizon(body.horizon);
-    if (body.dueAt !== undefined) action.dueAt = optionalString(body.dueAt, 'dueAt');
+    if (body.horizon !== undefined) {
+      action.horizon = oneOf(body.horizon, HORIZONS, 'horizon', action.horizon);
+    }
+    if (body.dueAt !== undefined) {
+      action.dueAt = body.dueAt ? isoDate(body.dueAt, 'dueAt') : undefined;
+    }
+    if (body.stakeholderId !== undefined) {
+      action.stakeholderId = optionalString(body.stakeholderId, 'stakeholderId');
+    }
+    if (body.wedgeId !== undefined) {
+      action.wedgeId = optionalString(body.wedgeId, 'wedgeId');
+    }
     if (body.resolvesClaimIds !== undefined) {
-      action.resolvesClaimIds = parseIdArray(body.resolvesClaimIds, 'resolvesClaimIds');
+      action.resolvesClaimIds = stringArray(body.resolvesClaimIds, 'resolvesClaimIds');
     }
-    if (body.status !== undefined) action.status = parseStatus(body.status);
     if (body.outcomeNote !== undefined) {
       action.outcomeNote = optionalString(body.outcomeNote, 'outcomeNote');
     }
-
-    if (action.status === 'done' && previousStatus !== 'done') {
-      action.completedAt = new Date().toISOString();
-      appendEvent(
-        aggregate,
-        newEvent('action_completed', `Action completed: ${action.objective}.`, {
-          entityRef: `action:${action.id}`,
-          reason: action.outcomeNote,
-        })
-      );
+    if (body.status !== undefined) {
+      action.status = oneOf(body.status, ACTION_STATUSES, 'status', action.status);
+      action.completedAt = action.status === 'open' ? undefined : new Date().toISOString();
     }
 
-    return action;
-  });
-
-  if (!outcome) return error(404, 'Account not found.');
-  if (!outcome.result) return error(404, 'Action not found.');
-  return mutationResult(outcome.aggregate, actionId);
-}
-
-async function removeAction(
-  req: Request,
-  accountId: string,
-  actionId: string
-): Promise<Response> {
-  const outcome = await mutateAggregate(accountId, expectedRev(req), (aggregate) => {
-    const action = aggregate.actions.find((a) => a.id === actionId);
-    if (!action) return null;
-
-    aggregate.actions = aggregate.actions.filter((a) => a.id !== actionId);
     appendEvent(
       aggregate,
-      newEvent('action_added', `Action removed: ${action.objective}.`, {
-        entityRef: `action:${actionId}`,
-        reason: 'Deleted by user.',
-      })
+      'action_updated',
+      previousStatus !== action.status
+        ? `${action.objective} — ${action.status}.`
+        : `${action.objective} updated.`,
+      { entityRef: `action:${action.id}`, reason: action.outcomeNote }
     );
-    return action;
   });
 
-  if (!outcome) return error(404, 'Account not found.');
-  if (!outcome.result) return error(404, 'Action not found.');
-  return mutationResult(outcome.aggregate, actionId);
+  if (!updated) return errorResponse('Account not found.', 404);
+  return aggregateResponse(updated);
 }
+
+async function removeAction(request: Request, id: string, aid: string): Promise<Response> {
+  const updated = await mutateAggregate(id, expectedRevOf(request), (aggregate) => {
+    const action = aggregate.actions.find((a) => a.id === aid);
+    if (!action) throw new NotFound('Action not found.');
+    aggregate.actions = aggregate.actions.filter((a) => a.id !== aid);
+    appendEvent(aggregate, 'action_removed', `${action.objective} removed.`, {
+      entityRef: `action:${aid}`,
+    });
+  });
+
+  if (!updated) return errorResponse('Account not found.', 404);
+  return aggregateResponse(updated);
+}
+
+export const config: Config = {
+  path: ['/api/accounts/:id/actions', '/api/accounts/:id/actions/:aid'],
+};

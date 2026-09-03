@@ -1,5 +1,9 @@
-import { useMemo, useState } from 'react';
-import { api, type ActionInput } from '../api';
+import { useState } from 'react';
+import { api } from '../api';
+import { useAccount } from '../useAccount';
+import { Disclosure, Empty, Field } from '../components/ui';
+import { formatDate } from '../format';
+import { nextBestActions } from '../domain/nba';
 import {
   CHANNELS,
   CHANNEL_LABELS,
@@ -8,319 +12,265 @@ import {
   type Action,
   type Channel,
   type Horizon,
-  type ID,
 } from '../domain/types';
-import { nextBestActions, NBA_TIER_LABELS, type NbaCandidate } from '../domain/nba';
-import { DEAL_STAGE_LABELS } from '../domain/types';
-import { useAccount } from './AccountLayout';
-import { EmptyState } from '../components/Feedback';
-import { Chip } from '../components/Chips';
-import { formatDate } from '../lib/format';
-
-const EMPTY_FORM: ActionInput = {
-  objective: '',
-  channel: 'call',
-  messageOrAction: '',
-  whyThisPersonNow: '',
-  desiredOutcome: '',
-  horizon: 'this_week',
-  resolvesClaimIds: [],
-};
 
 export default function Actions() {
-  const { aggregate, apply, setError } = useAccount();
-  const [form, setForm] = useState<ActionInput>(EMPTY_FORM);
-  const [busy, setBusy] = useState(false);
-
-  const candidates = useMemo(() => nextBestActions(aggregate), [aggregate]);
-  const top = candidates[0] ?? null;
-
-  const byHorizon = useMemo(() => {
-    const groups: Record<Horizon, Action[]> = {
-      this_week: [],
-      next_2_weeks: [],
-      next_30_days: [],
-    };
-    for (const action of aggregate.actions) {
-      if (action.status === 'open') groups[action.horizon].push(action);
-    }
-    for (const h of HORIZONS) {
-      groups[h].sort((a, b) => {
-        const ad = a.dueAt ? new Date(a.dueAt).getTime() : Infinity;
-        const bd = b.dueAt ? new Date(b.dueAt).getTime() : Infinity;
-        return ad - bd;
-      });
-    }
-    return groups;
-  }, [aggregate.actions]);
-
-  async function commitCandidate(candidate: NbaCandidate) {
-    setBusy(true);
-    setError(null);
-    try {
-      apply(
-        await api.addAction(aggregate.account.id, aggregate.rev, {
-          objective: candidate.objective,
-          channel: candidate.channel,
-          messageOrAction: '',
-          whyThisPersonNow: candidate.whyNow,
-          desiredOutcome: candidate.desiredOutcome,
-          horizon: candidate.horizon,
-          stakeholderId: candidate.stakeholderId,
-          resolvesClaimIds: candidate.claimId ? [candidate.claimId] : [],
-        })
-      );
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not commit the action.');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function add(event: React.FormEvent) {
-    event.preventDefault();
-    if (!form.objective.trim()) return;
-
-    setBusy(true);
-    setError(null);
-    try {
-      apply(
-        await api.addAction(aggregate.account.id, aggregate.rev, {
-          ...form,
-          objective: form.objective.trim(),
-          messageOrAction: form.messageOrAction.trim(),
-          whyThisPersonNow: form.whyThisPersonNow.trim(),
-          desiredOutcome: form.desiredOutcome.trim(),
-        })
-      );
-      setForm(EMPTY_FORM);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not save the action.');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function complete(action: Action) {
-    setError(null);
-    try {
-      apply(
-        await api.updateAction(aggregate.account.id, action.id, aggregate.rev, {
-          status: 'done',
-        })
-      );
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not complete the action.');
-    }
-  }
-
-  async function drop(action: Action) {
-    setError(null);
-    try {
-      apply(
-        await api.updateAction(aggregate.account.id, action.id, aggregate.rev, {
-          status: 'dropped',
-        })
-      );
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not drop the action.');
-    }
-  }
-
-  async function remove(action: Action) {
-    if (!window.confirm(`Remove "${action.objective}"?`)) return;
-    setError(null);
-    try {
-      apply(await api.deleteAction(aggregate.account.id, action.id, aggregate.rev));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not remove the action.');
-    }
-  }
-
-  const stakeholderName = (id?: ID) =>
-    id ? aggregate.stakeholders.find((s) => s.id === id)?.name ?? 'Unknown' : null;
+  const { aggregate } = useAccount();
+  const nba = nextBestActions(aggregate);
+  const open = aggregate.actions.filter((a) => a.status === 'open');
+  const closed = aggregate.actions.filter((a) => a.status !== 'open');
 
   return (
-    <div className="panel-stack">
-      {top && (
-        <div className="card nba-card">
-          <div className="nba-head">
-            <h2>Next Best Action</h2>
-            <Chip
-              label={NBA_TIER_LABELS[top.tier]}
-              tone={top.tier === 'critical' ? 'bad' : top.tier === 'high' ? 'warn' : top.tier === 'medium' ? 'info' : 'neutral'}
-            />
-            <Chip label={DEAL_STAGE_LABELS[top.stage]} tone="neutral" />
-          </div>
-          <p className="nba-objective">{top.objective}</p>
-          <p className="subtle">{top.whyNow}</p>
-          <p className="subtle">
-            <strong>Desired outcome:</strong> {top.desiredOutcome}
-          </p>
-          <div className="nba-actions">
-            <button type="button" disabled={busy} onClick={() => commitCandidate(top)}>
-              {busy ? 'Committing…' : 'Commit as action'}
-            </button>
-          </div>
-        </div>
-      )}
-
+    <>
       <div className="card">
-        <h2>30-day plan</h2>
-
-        {aggregate.actions.filter((a) => a.status === 'open').length === 0 && !top ? (
-          <EmptyState title="Nothing to do.">
-            <p>
-              The account has no open actions and no candidates. Either it is fully covered, or you
-              need to record more evidence and stakeholders for the system to find the next gap.
-            </p>
-          </EmptyState>
+        <h2>Next best actions</h2>
+        <p className="dim">
+          Ranked by rules, not by a model. Each one names the gap it closes and what the account
+          currently does or does not have.
+        </p>
+        {nba.length === 0 ? (
+          <p className="muted" style={{ marginTop: 8 }}>
+            Nothing outstanding.
+          </p>
         ) : (
-          HORIZONS.map((horizon) => {
-            const actions = byHorizon[horizon];
-            if (actions.length === 0) return null;
-            return (
-              <div key={horizon} className="horizon-group">
-                <h3>{HORIZON_LABELS[horizon]}</h3>
-                <ul className="action-list">
-                  {actions.map((action) => {
-                    const person = stakeholderName(action.stakeholderId);
-                    const overdue =
-                      action.dueAt && new Date(action.dueAt).getTime() < Date.now();
-                    return (
-                      <li key={action.id} className={overdue ? 'action-overdue' : ''}>
-                        <div className="action-head">
-                          <strong>{action.objective}</strong>
-                          {overdue && <Chip label="Overdue" tone="warn" />}
-                        </div>
-                        <p className="subtle">
-                          {CHANNEL_LABELS[action.channel]}
-                          {person ? ` · ${person}` : ''}
-                          {action.dueAt ? ` · due ${formatDate(action.dueAt)}` : ''}
-                        </p>
-                        {action.messageOrAction && (
-                          <p className="action-message">{action.messageOrAction}</p>
-                        )}
-                        {action.whyThisPersonNow && (
-                          <p className="subtle">Why now: {action.whyThisPersonNow}</p>
-                        )}
-                        {action.desiredOutcome && (
-                          <p className="subtle">
-                            <strong>Outcome:</strong> {action.desiredOutcome}
-                          </p>
-                        )}
-                        <div className="action-buttons">
-                          <button type="button" className="link-button" onClick={() => complete(action)}>
-                            Mark done
-                          </button>
-                          <button type="button" className="link-button" onClick={() => drop(action)}>
-                            Drop
-                          </button>
-                          <button type="button" className="link-button danger-quiet" onClick={() => remove(action)}>
-                            Remove
-                          </button>
-                        </div>
-                      </li>
-                    );
-                  })}
-                </ul>
+          <div className="grid" style={{ marginTop: 10 }}>
+            {nba.slice(0, 5).map((candidate) => (
+              <div className="card tight" key={candidate.key}>
+                <div className="row">
+                  <span className={`badge ${candidate.tier}`}>{candidate.tier}</span>
+                  <strong>{candidate.title}</strong>
+                </div>
+                <p className="muted" style={{ marginTop: 4 }}>
+                  {candidate.why}
+                </p>
+                <p style={{ marginBottom: 0 }}>{candidate.suggestedAction}</p>
               </div>
-            );
-          })
+            ))}
+          </div>
         )}
       </div>
 
-      <form className="card form-grid" onSubmit={add}>
-        <h2>Add an action</h2>
-        <p className="subtle">
-          Every action has a desired outcome. If you cannot state what success looks like, the
-          action is not specific enough to be useful.
-        </p>
+      <div className="card">
+        <h2>Plan ({open.length} open)</h2>
+        {open.length === 0 ? (
+          <Empty>Nothing booked. An account with no next step is an account going stale.</Empty>
+        ) : (
+          open.map((action) => <ActionRow key={action.id} action={action} />)
+        )}
+      </div>
 
-        <label className="span-2">
-          <span>Objective</span>
-          <input
-            value={form.objective}
-            onChange={(e) => setForm({ ...form, objective: e.target.value })}
-            placeholder="Get Priya to introduce the head of procurement"
-            required
-          />
-        </label>
+      {closed.length > 0 ? (
+        <div className="card">
+          <h2>Closed</h2>
+          {closed.map((action) => (
+            <ActionRow key={action.id} action={action} />
+          ))}
+        </div>
+      ) : null}
 
-        <label className="span-2">
-          <span>What you will do or say</span>
-          <textarea
-            value={form.messageOrAction}
-            onChange={(e) => setForm({ ...form, messageOrAction: e.target.value })}
-            rows={2}
-            placeholder="Ask Priya for a warm intro to Ravi, framing it around the build-time metric she cares about."
-          />
-        </label>
+      <AddAction />
+    </>
+  );
+}
 
-        <label className="span-2">
-          <span>Why this person, why now</span>
-          <textarea
-            value={form.whyThisPersonNow}
-            onChange={(e) => setForm({ ...form, whyThisPersonNow: e.target.value })}
-            rows={2}
-            placeholder="Priya is a coach and has already shared that procurement is the bottleneck."
-          />
-        </label>
+function ActionRow({ action }: { action: Action }) {
+  const { aggregate, busy, run } = useAccount();
+  const person = aggregate.stakeholders.find((s) => s.id === action.stakeholderId);
+  const overdue =
+    action.status === 'open' && action.dueAt !== undefined && new Date(action.dueAt) < new Date();
 
-        <label className="span-2">
-          <span>Desired outcome</span>
-          <input
-            value={form.desiredOutcome}
-            onChange={(e) => setForm({ ...form, desiredOutcome: e.target.value })}
-            placeholder="A meeting with Ravi scheduled within two weeks."
-          />
-        </label>
+  const patch = (payload: Record<string, unknown>) =>
+    void run((rev) => api.patch(aggregate.account.id, 'actions', action.id, rev, payload));
 
-        <label>
-          <span>Channel</span>
-          <select
-            value={form.channel}
-            onChange={(e) => setForm({ ...form, channel: e.target.value as Channel })}
-          >
-            {CHANNELS.map((ch) => (
-              <option key={ch} value={ch}>
-                {CHANNEL_LABELS[ch]}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <label>
-          <span>Horizon</span>
-          <select
-            value={form.horizon}
-            onChange={(e) => setForm({ ...form, horizon: e.target.value as Horizon })}
-          >
-            {HORIZONS.map((h) => (
-              <option key={h} value={h}>
-                {HORIZON_LABELS[h]}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <label>
-          <span>Due date</span>
-          <input
-            type="date"
-            value={form.dueAt ? form.dueAt.slice(0, 10) : ''}
-            onChange={(e) =>
-              setForm({ ...form, dueAt: e.target.value ? new Date(e.target.value).toISOString() : undefined })
+  return (
+    <div className="card tight">
+      <div className="row between">
+        <div className="spread">
+          <div className="row">
+            <strong>{action.objective}</strong>
+            <span className="badge">{CHANNEL_LABELS[action.channel]}</span>
+            <span className="badge">{HORIZON_LABELS[action.horizon]}</span>
+            {overdue ? <span className="badge stale">Overdue</span> : null}
+          </div>
+          {person ? <div className="dim">{person.name} — {person.role}</div> : null}
+          {action.messageOrAction ? <p style={{ marginTop: 6 }}>{action.messageOrAction}</p> : null}
+          {action.desiredOutcome ? (
+            <p className="muted">Outcome sought: {action.desiredOutcome}</p>
+          ) : null}
+          <div className="dim">
+            Due {formatDate(action.dueAt)}
+            {action.outcomeNote ? ` · ${action.outcomeNote}` : ''}
+          </div>
+        </div>
+        <div className="row">
+          {action.status === 'open' ? (
+            <>
+              <button
+                className="small"
+                disabled={busy}
+                onClick={() => {
+                  const note = prompt('What happened?') ?? undefined;
+                  patch({ status: 'done', outcomeNote: note });
+                }}
+              >
+                Done
+              </button>
+              <button className="small" disabled={busy} onClick={() => patch({ status: 'dropped' })}>
+                Drop
+              </button>
+            </>
+          ) : (
+            <span className="badge">{action.status}</span>
+          )}
+          <button
+            className="small danger"
+            disabled={busy}
+            onClick={() =>
+              void run((rev) => api.remove(aggregate.account.id, 'actions', action.id, rev))
             }
-          />
-        </label>
-
-        <div className="form-actions span-2">
-          <button type="submit" disabled={busy || !form.objective.trim()}>
-            {busy ? 'Saving…' : 'Add action'}
+          >
+            Delete
           </button>
         </div>
-      </form>
+      </div>
     </div>
+  );
+}
+
+function AddAction() {
+  const { aggregate, busy, run } = useAccount();
+  const [objective, setObjective] = useState('');
+  const [channel, setChannel] = useState<Channel>('email');
+  const [horizon, setHorizon] = useState<Horizon>('this_week');
+  const [stakeholderId, setStakeholderId] = useState('');
+  const [wedgeId, setWedgeId] = useState('');
+  const [messageOrAction, setMessageOrAction] = useState('');
+  const [whyThisPersonNow, setWhyThisPersonNow] = useState('');
+  const [desiredOutcome, setDesiredOutcome] = useState('');
+  const [dueAt, setDueAt] = useState('');
+  const [resolvesClaimIds, setResolvesClaimIds] = useState<string[]>([]);
+
+  const unknowns = aggregate.claims.filter((c) => c.status === 'UNKNOWN');
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    const saved = await run((rev) =>
+      api.create(aggregate.account.id, 'actions', rev, {
+        objective,
+        channel,
+        horizon,
+        stakeholderId: stakeholderId || undefined,
+        wedgeId: wedgeId || undefined,
+        messageOrAction,
+        whyThisPersonNow,
+        desiredOutcome,
+        dueAt: dueAt || undefined,
+        resolvesClaimIds,
+      })
+    );
+    if (saved) {
+      setObjective('');
+      setMessageOrAction('');
+      setWhyThisPersonNow('');
+      setDesiredOutcome('');
+      setResolvesClaimIds([]);
+    }
+  }
+
+  return (
+    <Disclosure summary="Plan an action">
+      <form onSubmit={submit}>
+        <Field label="Objective">
+          <input
+            value={objective}
+            onChange={(e) => setObjective(e.target.value)}
+            placeholder="Get the platform lead to name the first repo for a pilot"
+          />
+        </Field>
+        <div className="grid two">
+          <Field label="Person">
+            <select value={stakeholderId} onChange={(e) => setStakeholderId(e.target.value)}>
+              <option value="">Nobody yet</option>
+              {aggregate.stakeholders.map((person) => (
+                <option key={person.id} value={person.id}>
+                  {person.name} — {person.role}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Wedge">
+            <select value={wedgeId} onChange={(e) => setWedgeId(e.target.value)}>
+              <option value="">No wedge</option>
+              {aggregate.wedges.map((wedge) => (
+                <option key={wedge.id} value={wedge.id}>
+                  {wedge.useCase}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Channel">
+            <select value={channel} onChange={(e) => setChannel(e.target.value as Channel)}>
+              {CHANNELS.map((c) => (
+                <option key={c} value={c}>
+                  {CHANNEL_LABELS[c]}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Horizon">
+            <select value={horizon} onChange={(e) => setHorizon(e.target.value as Horizon)}>
+              {HORIZONS.map((h) => (
+                <option key={h} value={h}>
+                  {HORIZON_LABELS[h]}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field label="Due">
+            <input type="date" value={dueAt} onChange={(e) => setDueAt(e.target.value)} />
+          </Field>
+          <Field label="Why this person now">
+            <input
+              value={whyThisPersonNow}
+              onChange={(e) => setWhyThisPersonNow(e.target.value)}
+            />
+          </Field>
+        </div>
+        <Field label="What you will say or do">
+          <textarea
+            value={messageOrAction}
+            onChange={(e) => setMessageOrAction(e.target.value)}
+          />
+        </Field>
+        <Field label="Desired outcome">
+          <input value={desiredOutcome} onChange={(e) => setDesiredOutcome(e.target.value)} />
+        </Field>
+        {unknowns.length > 0 ? (
+          <Field label="Unknowns this closes">
+            <div className="signals">
+              {unknowns.map((claim) => (
+                <label className="signal" key={claim.id}>
+                  <input
+                    type="checkbox"
+                    checked={resolvesClaimIds.includes(claim.id)}
+                    onChange={() =>
+                      setResolvesClaimIds(
+                        resolvesClaimIds.includes(claim.id)
+                          ? resolvesClaimIds.filter((id) => id !== claim.id)
+                          : [...resolvesClaimIds, claim.id]
+                      )
+                    }
+                  />
+                  <span>{claim.text}</span>
+                </label>
+              ))}
+            </div>
+          </Field>
+        ) : null}
+        <button className="primary" disabled={busy || !objective.trim()}>
+          Save action
+        </button>
+      </form>
+    </Disclosure>
   );
 }

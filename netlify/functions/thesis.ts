@@ -1,338 +1,240 @@
-/**
- * Thesis generator.
- *
- * The LLM proposes claims and a narrative; the server enforces the FACT
- * invariant. The model is given evidence verbatim and asked to identify
- * patterns, not to invent facts. If the evidence does not support a thesis,
- * the model returns insufficient_evidence rather than confabulating.
- *
- * Every generated claim is validated against the same claimInvariantError
- * function that manual claims pass through. A claim the model labels FACT
- * that fails validation is downgraded to HYPOTHESIS; a claim citing no
- * evidence becomes UNKNOWN. The model cannot override these rules.
- *
- * The generator also produces:
- * - whyItMatters: a 2-3 sentence narrative explaining why this account matters
- * - evidenceStatuses: a map of evidence ID → FACT/HYPOTHESIS/UNKNOWN
- */
-
 import type { Config, Context } from '@netlify/functions';
-import Anthropic from '@anthropic-ai/sdk';
-import { z } from 'zod';
-import { appendEvent, mutateAggregate, newEvent, newId, readAggregate } from '../lib/store';
+import type Anthropic from '@anthropic-ai/sdk';
 import {
-  BadRequestError,
-  error,
-  expectedRev,
-  jsonWithRev,
-  mutationResult,
-  toResponse,
+  aggregateResponse,
+  errorResponse,
+  expectedRevOf,
+  handle,
 } from '../lib/http';
+import { appendEvent, mutateAggregate, newId, readAggregate } from '../lib/store';
+import { structuredCall } from '../lib/claude';
+import { clampStatus } from '../../src/domain/claims';
 import {
   CLAIM_CATEGORIES,
+  CLAIM_STATUSES,
+  EVIDENCE_CATEGORY_LABELS,
+  SOURCE_TYPE_LABELS,
+  type AccountAggregate,
   type Claim,
   type ClaimCategory,
   type ClaimStatus,
   type EvidenceItem,
 } from '../../src/domain/types';
-import { claimInvariantError } from '../../src/domain/claims';
 
-export const config: Config = {
-  path: ['/api/accounts/:accountId/thesis/generate'],
-};
+const SYSTEM = `You write the account thesis for an enterprise account executive selling Devin, Cognition's autonomous AI software engineer.
 
-const ThesisSchema = z.object({
-  insufficientEvidence: z.boolean(),
-  reason: z.string().nullable(),
-  whyItMatters: z.string().nullable(),
-  evidenceStatuses: z.array(
-    z.object({
-      evidenceId: z.string(),
-      status: z.enum(['FACT', 'HYPOTHESIS', 'UNKNOWN']),
-    })
-  ),
-  claims: z.array(
-    z.object({
-      text: z.string(),
-      category: z.enum([
-        'engineering_scale',
-        'factory_fit',
-        'urgency',
-        'right_to_win',
-        'why_matters',
-        'why_now',
-        'trigger',
-        'business_init',
-        'tech_init',
-        'problem',
-        'value',
-      ]),
-      status: z.enum(['FACT', 'HYPOTHESIS', 'UNKNOWN']),
-      evidenceIds: z.array(z.string()),
-      reasoning: z.string(),
-    })
-  ),
-});
+Devin is bought by engineering leadership to absorb queued-up, well-specified engineering work — migrations, refactors, dependency and CVE remediation, test backfill, bug burn-down, CI repair, codebase Q&A — by running many sessions in parallel. Its value scales with the volume of that work and with the size of the engineering organisation.
 
-type ThesisResponse = z.infer<typeof ThesisSchema>;
+You are given the evidence ledger for one account. You do not have access to anything else, and you must not add facts that are not in the ledger.
 
-export default async (req: Request, context: Context): Promise<Response> => {
-  const accountId = context.params.accountId;
+Produce:
+1. A short narrative — three to five sentences — of why this account matters right now, what Devin would actually be deployed against, and what is still unproven.
+2. A status for each piece of evidence: FACT if it is a verifiable observation from a named source, HYPOTHESIS if it is an interpretation, UNKNOWN if it raises a question rather than answering one.
+3. A set of claims. One rating claim per criterion, worded as a rating with a short justification (for example "Engineering scale: HIGH — roughly 900 engineers across 40+ services"). Then the open unknowns: the things that must be true for this deal to work and that the ledger does not yet show.
 
-  try {
-    if (!accountId) return error(400, 'Missing account id.');
-    if (req.method !== 'POST') return error(405, 'Use POST to generate a thesis.');
+Rules:
+- Every FACT claim must cite at least one piece of evidence from a verifiable source. Cite by index.
+- UNKNOWN claims cite nothing.
+- Never rate Right to Win above HYPOTHESIS unless the ledger contains first-party evidence: a conversation, a document, or an internal signal. Public web material does not establish it.
+- Be specific and unsentimental. An AE has to say these words to a VP of Engineering.`;
 
-    const loaded = await readAggregate(accountId);
-    if (!loaded) return error(404, 'Account not found.');
-
-    const apiKey = Netlify.env.get('ANTHROPIC_API_KEY');
-    if (!apiKey) {
-      return error(500, 'ANTHROPIC_API_KEY is not set. Add it in Netlify environment variables.');
-    }
-
-    if (loaded.aggregate.evidence.length === 0) {
-      return error(400, 'No evidence to analyse. Record evidence first — a thesis without evidence is a guess.');
-    }
-
-    const generated = await callClaude(apiKey, loaded.aggregate.evidence, loaded.aggregate.claims);
-
-    if (generated.insufficientEvidence) {
-      return jsonWithRev(
-        {
-          insufficientEvidence: true,
-          reason: generated.reason ?? 'The evidence does not support a thesis yet.',
-          claimsAdded: 0,
-        },
-        loaded.aggregate.rev
-      );
-    }
-
-    // Validate and convert the model's claims into domain claims.
-    const newClaims: Claim[] = [];
-    const downgrades: string[] = [];
-    const now = new Date().toISOString();
-    const evidenceById = new Map(loaded.aggregate.evidence.map((e) => [e.id, e]));
-
-    for (const proposed of generated.claims) {
-      // Only keep evidence IDs that actually exist.
-      const validEvidenceIds = proposed.evidenceIds.filter((id) => evidenceById.has(id));
-
-      const claim: Claim = {
-        id: newId(),
-        text: proposed.text,
-        status: proposed.status,
-        category: proposed.category as ClaimCategory,
-        evidenceIds: validEvidenceIds,
-        asOf: now,
-        createdAt: now,
-      };
-
-      // The server has the final word. If the model says FACT but the
-      // invariant doesn't hold, downgrade — don't discard, but don't lie.
-      const invariantError = claimInvariantError(claim, loaded.aggregate.evidence);
-      if (invariantError) {
-        if (claim.status === 'FACT') {
-          claim.status = validEvidenceIds.length > 0 ? 'HYPOTHESIS' : 'UNKNOWN';
-          downgrades.push(`"${claim.text}" was downgraded from FACT to ${claim.status}.`);
-        }
-        // An UNKNOWN citing evidence is invalid; strip the citations.
-        if (claim.status === 'UNKNOWN') {
-          claim.evidenceIds = [];
-        }
-      }
-
-      newClaims.push(claim);
-    }
-
-    // Build a map of evidence ID → status from the model's output.
-    const evidenceStatusMap = new Map<string, ClaimStatus>();
-    for (const es of generated.evidenceStatuses) {
-      if (evidenceById.has(es.evidenceId)) {
-        evidenceStatusMap.set(es.evidenceId, es.status as ClaimStatus);
-      }
-    }
-
-    const outcome = await mutateAggregate(accountId, expectedRev(req), (aggregate) => {
-      // Replace existing claims with the generated ones.
-      const oldClaimIds = new Set(aggregate.claims.map((c) => c.id));
-      aggregate.claims = newClaims;
-
-      // Clean up action references to removed claims.
-      for (const action of aggregate.actions) {
-        action.resolvesClaimIds = action.resolvesClaimIds.filter((id) => !oldClaimIds.has(id));
-      }
-
-      // Store the narrative.
-      aggregate.whyItMatters = generated.whyItMatters ?? undefined;
-
-      // Set status on each evidence item from the model's analysis.
-      for (const item of aggregate.evidence) {
-        const newStatus = evidenceStatusMap.get(item.id);
-        if (newStatus) {
-          item.status = newStatus;
-        }
-      }
-
-      appendEvent(
-        aggregate,
-        newEvent(
-          'thesis_regenerated',
-          `Thesis regenerated: ${newClaims.length} claims${downgrades.length > 0 ? `, ${downgrades.length} downgraded` : ''}.`,
-          { entityRef: `account:${accountId}` }
-        )
-      );
-
-      return { claimsAdded: newClaims.length, downgrades };
-    });
-
-    if (!outcome) return error(404, 'Account not found.');
-
-    return mutationResult(outcome.aggregate, undefined);
-  } catch (err) {
-    return toResponse(err);
-  }
-};
-
-async function callClaude(
-  apiKey: string,
-  evidence: EvidenceItem[],
-  existingClaims: Claim[]
-): Promise<ThesisResponse> {
-  const anthropic = new Anthropic({ apiKey });
-
-  const evidenceBlock = evidence
-    .map((e) => {
-      const label = e.sourceType === 'inference' ? ' [INFERENCE — cannot support a FACT]' : '';
-      const conf = e.confidential ? ' [CONFIDENTIAL]' : '';
-      const cat = e.evidenceCategory ? ` [${e.evidenceCategory}]` : '';
-      return `[${e.id}] (${e.sourceType})${label}${conf}${cat}\n${e.verbatim}`;
-    })
-    .join('\n\n');
-
-  const existingBlock =
-    existingClaims.length > 0
-      ? existingClaims
-          .map((c) => `- ${c.status}: "${c.text}" (${c.category})`)
-          .join('\n')
-      : '(none yet)';
-
-  const system = `You are a strategic account analyst for Factory, an AI coding agent platform.
-Your job is to read the evidence and produce an account thesis.
-
-The evidence is organised into 4 strategic categories:
-- engineering_scale: Does the account have enough engineering surface area?
-- factory_fit: Does the account have workloads that match Factory's AI coding agent?
-- urgency: Why would they act now rather than later?
-- right_to_win: Does Factory have a credible route to win?
-
-You must produce:
-1. whyItMatters: A 2-3 sentence narrative explaining why this account matters to Factory, tying the 4 categories together. Be specific and honest — if the account is weak in a category, say so.
-2. evidenceStatuses: For each evidence item, assign a status:
-   - FACT: confirmed by a reliable source (filing, earnings call, or corroborated by multiple sources)
-   - HYPOTHESIS: single-source or inferred — likely true but not confirmed
-   - UNKNOWN: uncertain or needs validation
-3. claims: Structured assertions about the account. For each claim:
-   - text: a single clear assertion
-   - category: one of ${CLAIM_CATEGORIES.join(', ')}
-   - status: FACT, HYPOTHESIS, or UNKNOWN
-   - evidenceIds: the evidence IDs that support this claim (empty for UNKNOWN)
-   - reasoning: one sentence on why you chose this status
-
-Rules — these are enforced in code and you cannot override them:
-1. A FACT must cite at least one piece of evidence that is NOT an inference. Inference evidence is marked [INFERENCE] and cannot support a FACT.
-2. A HYPOTHESIS is a reasoned guess. It may cite evidence (including inference) or cite nothing.
-3. An UNKNOWN is an explicit gap. It must NOT cite any evidence — if you have evidence, it is at least a HYPOTHESIS.
-4. If the evidence is too thin to support any thesis, return insufficientEvidence: true with a reason. Do not confabulate.
-5. Every evidenceId you cite must be one of the IDs provided below.
-
-Be honest. The point is not to sound confident but to be accurate about what is known and what is not.`;
-
-  const user = `Evidence:
-${evidenceBlock}
-
-Existing claims:
-${existingBlock}
-
-Analyse this evidence and produce:
-1. A whyItMatters narrative (2-3 sentences)
-2. A status for each evidence item (FACT, HYPOTHESIS, or UNKNOWN)
-3. A set of claims about this account
-
-If the evidence is insufficient to say anything meaningful, set insufficientEvidence to true and explain why.`;
-
-  const response = await anthropic.messages.create({
-    model: 'claude-haiku-4-5-20251001',
-    max_tokens: 4000,
-    system,
-    messages: [{ role: 'user', content: user }],
-    tools: [
-      {
-        name: 'submit_thesis',
-        description: 'Submit the thesis analysis with narrative, evidence statuses, and claims.',
-        input_schema: THESIS_JSON_SCHEMA,
-      } as Anthropic.Tool,
-    ],
-    tool_choice: { type: 'tool', name: 'submit_thesis' },
-  });
-
-  const toolUse = response.content.find((b) => b.type === 'tool_use');
-  if (!toolUse || toolUse.type !== 'tool_use') {
-    throw new BadRequestError('The model did not return a valid thesis. Try again.');
-  }
-
-  return toolUse.input as ThesisResponse;
-}
-
-const THESIS_JSON_SCHEMA = {
-  type: 'object',
-  properties: {
-    insufficientEvidence: { type: 'boolean' },
-    reason: { type: ['string', 'null'] },
-    whyItMatters: { type: ['string', 'null'] },
-    evidenceStatuses: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          evidenceId: { type: 'string' },
-          status: { type: 'string', enum: ['FACT', 'HYPOTHESIS', 'UNKNOWN'] },
-        },
-        required: ['evidenceId', 'status'],
-        additionalProperties: false,
-      },
-    },
-    claims: {
-      type: 'array',
-      items: {
-        type: 'object',
-        properties: {
-          text: { type: 'string' },
-          category: {
-            type: 'string',
-            enum: [
-              'engineering_scale',
-              'factory_fit',
-              'urgency',
-              'right_to_win',
-              'why_matters',
-              'why_now',
-              'trigger',
-              'business_init',
-              'tech_init',
-              'problem',
-              'value',
-            ],
+const THESIS_TOOL: Anthropic.Tool = {
+  name: 'submit_thesis',
+  description: 'Return the account thesis, evidence statuses, and claims.',
+  input_schema: {
+    type: 'object',
+    required: ['whyItMatters', 'claims'],
+    properties: {
+      whyItMatters: { type: 'string' },
+      evidenceAssessments: {
+        type: 'array',
+        items: {
+          type: 'object',
+          required: ['index', 'status'],
+          properties: {
+            index: { type: 'integer' },
+            status: { type: 'string', enum: CLAIM_STATUSES },
+            whyItMatters: { type: 'string' },
+            implicationForDevin: { type: 'string' },
+            nextDiscoveryQuestion: { type: 'string' },
           },
-          status: { type: 'string', enum: ['FACT', 'HYPOTHESIS', 'UNKNOWN'] },
-          evidenceIds: { type: 'array', items: { type: 'string' } },
-          reasoning: { type: 'string' },
         },
-        required: ['text', 'category', 'status', 'evidenceIds', 'reasoning'],
-        additionalProperties: false,
+      },
+      claims: {
+        type: 'array',
+        minItems: 6,
+        items: {
+          type: 'object',
+          required: ['text', 'category', 'status'],
+          properties: {
+            text: { type: 'string' },
+            category: { type: 'string', enum: CLAIM_CATEGORIES },
+            status: { type: 'string', enum: CLAIM_STATUSES },
+            evidenceRefs: { type: 'array', items: { type: 'integer' } },
+          },
+        },
       },
     },
   },
-  required: ['insufficientEvidence', 'reason', 'whyItMatters', 'evidenceStatuses', 'claims'],
-  additionalProperties: false,
+};
+
+export interface ThesisResult {
+  whyItMatters: string;
+  evidenceAssessments?: {
+    index: number;
+    status: ClaimStatus;
+    whyItMatters?: string;
+    implicationForDevin?: string;
+    nextDiscoveryQuestion?: string;
+  }[];
+  claims: {
+    text: string;
+    category: ClaimCategory;
+    status: ClaimStatus;
+    evidenceRefs?: number[];
+  }[];
+}
+
+export default async (request: Request, context: Context): Promise<Response> =>
+  handle(request, async () => {
+    if (request.method !== 'POST') {
+      return errorResponse('Use POST to generate a thesis.', 405);
+    }
+
+    const id = context.params.id;
+    const loaded = await readAggregate(id);
+    if (!loaded) return errorResponse('Account not found.', 404);
+
+    const { evidence, account } = loaded.aggregate;
+    if (evidence.length === 0) {
+      return errorResponse(
+        'There is no evidence to reason over. Seed the account or add evidence first.',
+        422
+      );
+    }
+
+    const result = await structuredCall<ThesisResult>({
+      system: SYSTEM,
+      prompt: `Account: ${account.companyName}${account.domain ? ` (${account.domain})` : ''}. Today is ${new Date().toISOString().slice(0, 10)}.\n\nEvidence ledger:\n\n${renderLedger(evidence)}`,
+      tool: THESIS_TOOL,
+      maxTokens: 8000,
+    });
+
+    const updated = await mutateAggregate(id, expectedRevOf(request), (aggregate) => {
+      applyThesis(aggregate, result);
+    });
+
+    if (!updated) return errorResponse('Account not found.', 404);
+    return aggregateResponse(updated);
+  });
+
+function renderLedger(evidence: EvidenceItem[]): string {
+  return evidence
+    .map((item, i) => {
+      const category = item.evidenceCategory
+        ? EVIDENCE_CATEGORY_LABELS[item.evidenceCategory]
+        : 'Uncategorised';
+      const confidential = item.confidential ? ' [CONFIDENTIAL — never quote externally]' : '';
+      const url = item.externalUrl ? `\n    url: ${item.externalUrl}` : '';
+      return `[${i}] (${category}) ${SOURCE_TYPE_LABELS[item.sourceType]}${item.sourceRef ? ` — ${item.sourceRef}` : ''}, as of ${item.asOf}${confidential}\n    "${item.verbatim}"${url}`;
+    })
+    .join('\n\n');
+}
+
+export function applyThesis(aggregate: AccountAggregate, result: ThesisResult): void {
+  const now = new Date().toISOString();
+  const today = now.slice(0, 10);
+  const evidence = aggregate.evidence;
+
+  for (const assessment of result.evidenceAssessments ?? []) {
+    const item = evidence[assessment.index];
+    if (!item) continue;
+    // The model may not mark unverifiable material as fact, no matter how
+    // plausible its reasoning was.
+    item.status =
+      assessment.status === 'FACT' && item.sourceType === 'inference'
+        ? 'HYPOTHESIS'
+        : assessment.status;
+    item.whyItMatters = assessment.whyItMatters ?? item.whyItMatters;
+    item.implicationForDevin = assessment.implicationForDevin ?? item.implicationForDevin;
+    item.nextDiscoveryQuestion =
+      assessment.nextDiscoveryQuestion ?? item.nextDiscoveryQuestion;
+  }
+
+  // Claims the seller has curated by hand survive regeneration; only the
+  // previously generated set is replaced. Superseded claims keep their history
+  // through supersedesClaimId.
+  const curated = aggregate.claims.filter((c) => !c.generated);
+  const previous = aggregate.claims.filter((c) => c.generated);
+  const replacedBy = new Map<string, string>();
+  let downgraded = 0;
+
+  const claims: Claim[] = (result.claims ?? []).map((proposed) => {
+    const evidenceIds = (proposed.evidenceRefs ?? [])
+      .map((ref) => evidence[ref]?.id)
+      .filter((id): id is string => Boolean(id));
+
+    let status = clampStatus(proposed.status, evidenceIds, evidence);
+    if (proposed.category === 'right_to_win' && status === 'FACT' && !hasFirstPartyEvidence(evidenceIds, evidence)) {
+      status = 'HYPOTHESIS';
+    }
+    if (status !== proposed.status) downgraded += 1;
+
+    const supersedes = previous.find((c) => c.category === proposed.category);
+    const id = newId();
+    if (supersedes) replacedBy.set(supersedes.id, id);
+
+    return {
+      id,
+      text: proposed.text,
+      status,
+      category: proposed.category,
+      evidenceIds: status === 'UNKNOWN' ? [] : evidenceIds,
+      supersedesClaimId: supersedes?.id,
+      generated: true,
+      asOf: today,
+      reviewedAt: now,
+      createdAt: now,
+    };
+  });
+
+  aggregate.claims = [...curated, ...claims];
+  aggregate.whyItMatters = result.whyItMatters;
+
+  // An action that was resolving a generated claim follows that claim to its
+  // replacement rather than pointing at nothing.
+  const live = new Set(aggregate.claims.map((c) => c.id));
+  for (const action of aggregate.actions) {
+    action.resolvesClaimIds = [
+      ...new Set(
+        action.resolvesClaimIds
+          .map((claimId) => replacedBy.get(claimId) ?? claimId)
+          .filter((claimId) => live.has(claimId))
+      ),
+    ];
+  }
+
+  appendEvent(
+    aggregate,
+    'thesis_generated',
+    `Thesis regenerated from ${evidence.length} pieces of evidence into ${claims.length} claims.`,
+    {
+      reason: downgraded
+        ? `${downgraded} proposed status${downgraded === 1 ? ' was' : 'es were'} downgraded to match the evidence.`
+        : undefined,
+    }
+  );
+}
+
+/** Right to win rests on access, not on reading: only first-party sources count. */
+function hasFirstPartyEvidence(ids: string[], evidence: EvidenceItem[]): boolean {
+  return ids.some((id) => {
+    const item = evidence.find((e) => e.id === id);
+    if (!item) return false;
+    return item.sourceType === 'conversation' || item.sourceType === 'document';
+  });
+}
+
+export const config: Config = {
+  path: '/api/accounts/:id/thesis/generate',
 };

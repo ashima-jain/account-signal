@@ -1,131 +1,196 @@
 /**
- * Claim invariants.
+ * The judgment layer for evidence and claims.
  *
- * This module is the reason the product is trustworthy. A model asked to label
- * its own output will call a plausible guess a fact, so the rule is enforced
- * here in code and checked on the server for every write, whether the claim was
- * typed by the seller or generated.
+ * The model may propose that something is a FACT. Whether it *is* one is
+ * decided here, by code, against the evidence actually on the account.
  */
 
-import type { Claim, ClaimStatus, EvidenceItem, ID } from './types';
+import {
+  isVerifiableSource,
+  type Claim,
+  type ClaimStatus,
+  type EvidenceItem,
+  type ID,
+} from './types';
 
-/** A claim's asOf older than this is shown as needing re-validation. */
-export const CLAIM_STALE_AFTER_DAYS = 90;
+/** A claim is stale once its supporting evidence is this old and unreviewed. */
+export const STALE_AFTER_DAYS = 90;
 
-/**
- * Model reasoning is stored honestly as evidence so its influence is visible,
- * but it can never promote a claim to FACT. Otherwise the system launders its
- * own guesses into facts.
- */
-export function canSupportFact(item: EvidenceItem): boolean {
-  return item.sourceType !== 'inference';
+export function daysBetween(from: string, to: string | Date = new Date()): number {
+  const end = typeof to === 'string' ? new Date(to) : to;
+  const ms = end.getTime() - new Date(from).getTime();
+  return Math.floor(ms / 86_400_000);
 }
 
-/** Evidence a claim cites that still exists, in the order cited. */
-export function citedEvidence(claim: Claim, evidence: EvidenceItem[]): EvidenceItem[] {
-  const byId = new Map(evidence.map((e) => [e.id, e]));
-  return claim.evidenceIds
-    .map((id) => byId.get(id))
-    .filter((e): e is EvidenceItem => e !== undefined);
-}
-
-/** Ids the claim cites that no longer resolve. */
-export function danglingEvidenceIds(claim: Claim, evidence: EvidenceItem[]): ID[] {
-  const ids = new Set(evidence.map((e) => e.id));
-  return claim.evidenceIds.filter((id) => !ids.has(id));
+function byId(evidence: EvidenceItem[]): Map<ID, EvidenceItem> {
+  return new Map(evidence.map((e) => [e.id, e]));
 }
 
 /**
- * Returns an error message when the claim breaks an invariant, or null.
+ * The single gate every claim write passes through.
  *
- * - FACT needs at least one citation that resolves and is not an inference.
- * - UNKNOWN must cite nothing. Holding evidence and still calling something
- *   unknown hides work that has already been done; it is at least a hypothesis.
- * - No claim may cite evidence that does not exist.
+ * Returns a human-readable reason the claim is invalid, or null when it holds:
+ *   1. every cited evidence id must exist
+ *   2. a FACT must cite at least one non-inference item
+ *   3. an UNKNOWN must cite nothing — evidence makes it a HYPOTHESIS at worst
  */
-export function claimInvariantError(claim: Claim, evidence: EvidenceItem[]): string | null {
-  if (claim.text.trim() === '') return 'Claim text cannot be empty.';
+export function claimInvariantError(
+  claim: Pick<Claim, 'status' | 'evidenceIds' | 'text'>,
+  evidence: EvidenceItem[]
+): string | null {
+  const index = byId(evidence);
 
-  const dangling = danglingEvidenceIds(claim, evidence);
-  if (dangling.length > 0) {
-    return `Claim cites evidence that does not exist: ${dangling.join(', ')}.`;
+  const missing = claim.evidenceIds.filter((id) => !index.has(id));
+  if (missing.length > 0) {
+    return `Claim cites evidence that does not exist on this account: ${missing.join(', ')}.`;
   }
-
-  const cited = citedEvidence(claim, evidence);
 
   if (claim.status === 'FACT') {
-    if (cited.length === 0) {
-      return 'A FACT must cite at least one piece of evidence. Record the evidence first, or mark this a HYPOTHESIS.';
-    }
-    if (!cited.some(canSupportFact)) {
-      return 'A FACT cannot rest only on inference. Cite a source you can point to, or mark this a HYPOTHESIS.';
+    const support = claim.evidenceIds
+      .map((id) => index.get(id))
+      .filter((e): e is EvidenceItem => Boolean(e))
+      .filter((e) => isVerifiableSource(e.sourceType));
+    if (support.length === 0) {
+      return 'A FACT must cite at least one piece of evidence from a verifiable source. Inference alone is a HYPOTHESIS.';
     }
   }
 
-  if (claim.status === 'UNKNOWN' && cited.length > 0) {
-    return 'An UNKNOWN cannot cite evidence. If you have evidence for it, it is at least a HYPOTHESIS.';
+  if (claim.status === 'UNKNOWN' && claim.evidenceIds.length > 0) {
+    return 'An UNKNOWN cannot cite evidence. If you have evidence, it is at least a HYPOTHESIS.';
   }
 
   return null;
 }
 
-/**
- * The strongest status the citations actually justify. Used to demote claims
- * when their supporting evidence is deleted or downgraded, so removing a source
- * silently un-proves whatever rested on it.
- */
-export function supportedStatus(claim: Claim, evidence: EvidenceItem[]): ClaimStatus {
-  const cited = citedEvidence(claim, evidence);
-  if (cited.length === 0) return 'UNKNOWN';
-  if (!cited.some(canSupportFact)) return 'HYPOTHESIS';
-  return 'FACT';
+/** The strongest status a claim is entitled to, given what it cites. */
+export function highestSupportedStatus(
+  evidenceIds: ID[],
+  evidence: EvidenceItem[]
+): ClaimStatus {
+  const index = byId(evidence);
+  const cited = evidenceIds
+    .map((id) => index.get(id))
+    .filter((e): e is EvidenceItem => Boolean(e));
+  if (cited.some((e) => isVerifiableSource(e.sourceType))) return 'FACT';
+  if (cited.length > 0) return 'HYPOTHESIS';
+  return 'UNKNOWN';
 }
 
-export interface ClaimDemotion {
-  claim: Claim;
+/**
+ * Coerces a proposed claim into the strongest status the evidence supports.
+ * Used on the seed and thesis paths, where the model supplies the status.
+ */
+export function clampStatus(
+  proposed: ClaimStatus,
+  evidenceIds: ID[],
+  evidence: EvidenceItem[]
+): ClaimStatus {
+  const ceiling = highestSupportedStatus(evidenceIds, evidence);
+  if (proposed === 'FACT' && ceiling !== 'FACT') {
+    return ceiling === 'HYPOTHESIS' ? 'HYPOTHESIS' : 'UNKNOWN';
+  }
+  if (proposed === 'UNKNOWN' && evidenceIds.length > 0) return 'HYPOTHESIS';
+  return proposed;
+}
+
+export interface Demotion {
+  claimId: ID;
   from: ClaimStatus;
   to: ClaimStatus;
   reason: string;
 }
 
 /**
- * Brings every claim back within the invariants after an evidence change and
- * reports what moved, so each demotion can be written to the change log.
- * Only ever downgrades: promotion stays a deliberate act by the seller.
+ * Brings claims back in line with the evidence after something is deleted.
+ * Mutates the claims in place and reports what changed, so the caller can write
+ * the demotions to the change log.
+ *
+ * A HYPOTHESIS that loses its last citation stays a HYPOTHESIS: an unevidenced
+ * guess is still a legitimate guess, it just cannot be promoted.
  */
-export function reconcileClaims(claims: Claim[], evidence: EvidenceItem[]): ClaimDemotion[] {
-  const demotions: ClaimDemotion[] = [];
-  const ids = new Set(evidence.map((e) => e.id));
+export function reconcileClaims(
+  claims: Claim[],
+  evidence: EvidenceItem[]
+): Demotion[] {
+  const index = byId(evidence);
+  const demotions: Demotion[] = [];
 
   for (const claim of claims) {
-    claim.evidenceIds = claim.evidenceIds.filter((id) => ids.has(id));
+    const kept = claim.evidenceIds.filter((id) => index.has(id));
+    const lost = claim.evidenceIds.length - kept.length;
+    claim.evidenceIds = kept;
 
-    // A HYPOTHESIS with no evidence is legitimate: it is a guess awaiting a
-    // test. Only a FACT can be invalidated by losing its support.
     if (claim.status !== 'FACT') continue;
+    if (highestSupportedStatus(kept, evidence) === 'FACT') continue;
 
-    // Recomputed rather than keyed off removals, so downgrading a source to an
-    // inference also demotes whatever rested on it.
-    const supported = supportedStatus(claim, evidence);
-    if (supported === 'FACT') continue;
-
-    claim.status = supported;
     demotions.push({
-      claim,
+      claimId: claim.id,
       from: 'FACT',
-      to: supported,
+      to: 'HYPOTHESIS',
       reason:
-        supported === 'UNKNOWN'
-          ? 'Supporting evidence was removed.'
-          : 'Only inference-based evidence remains.',
+        lost > 0
+          ? 'Lost its last verifiable citation when evidence was removed.'
+          : 'No longer cites evidence from a verifiable source.',
     });
+    claim.status = 'HYPOTHESIS';
   }
 
   return demotions;
 }
 
-export function claimIsStale(claim: Claim, now: Date = new Date()): boolean {
-  const reference = claim.reviewedAt ?? claim.asOf;
-  const age = now.getTime() - new Date(reference).getTime();
-  return age > CLAIM_STALE_AFTER_DAYS * 24 * 60 * 60 * 1000;
+/**
+ * Stale means: nobody has looked at this claim in 90 days and the evidence it
+ * rests on is older than that too. Revalidating (setting reviewedAt) clears it
+ * without needing new evidence.
+ */
+export function isStale(
+  claim: Claim,
+  evidence: EvidenceItem[],
+  now: Date = new Date()
+): boolean {
+  if (claim.status === 'UNKNOWN') return false;
+
+  const lastLookedAt = claim.reviewedAt ?? claim.asOf ?? claim.createdAt;
+  if (daysBetween(lastLookedAt, now) < STALE_AFTER_DAYS) return false;
+
+  const index = byId(evidence);
+  const freshest = claim.evidenceIds
+    .map((id) => index.get(id)?.asOf)
+    .filter((asOf): asOf is string => Boolean(asOf))
+    .sort()
+    .at(-1);
+
+  if (!freshest) return true;
+  return daysBetween(freshest, now) >= STALE_AFTER_DAYS;
+}
+
+export function staleClaims(
+  claims: Claim[],
+  evidence: EvidenceItem[],
+  now: Date = new Date()
+): Claim[] {
+  return claims.filter((c) => isStale(c, evidence, now));
+}
+
+/** How many claims cite a given evidence item. Drives the removal warning. */
+export function citationCount(evidenceId: ID, claims: Claim[]): number {
+  return claims.filter((c) => c.evidenceIds.includes(evidenceId)).length;
+}
+
+/** Claims that would be demoted if this evidence item were removed. */
+export function demotionsIfRemoved(
+  evidenceId: ID,
+  claims: Claim[],
+  evidence: EvidenceItem[]
+): Claim[] {
+  const remaining = evidence.filter((e) => e.id !== evidenceId);
+  return claims.filter(
+    (c) =>
+      c.status === 'FACT' &&
+      c.evidenceIds.includes(evidenceId) &&
+      highestSupportedStatus(
+        c.evidenceIds.filter((id) => id !== evidenceId),
+        remaining
+      ) !== 'FACT'
+  );
 }

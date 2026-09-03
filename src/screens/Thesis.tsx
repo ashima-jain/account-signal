@@ -1,267 +1,257 @@
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import { api } from '../api';
+import { useAccount } from '../useAccount';
+import { Citations, Disclosure, Empty, Field, StatusBadge } from '../components/ui';
+import { formatDate } from '../format';
+import { EvidencePicker } from '../components/ui';
+import { isStale } from '../domain/claims';
 import {
-  EVIDENCE_CATEGORIES,
-  EVIDENCE_CATEGORY_LABELS,
+  CLAIM_CATEGORIES,
+  CLAIM_CATEGORY_LABELS,
+  CLAIM_STATUSES,
+  RATING_CLAIM_CATEGORIES,
+  type Claim,
+  type ClaimCategory,
   type ClaimStatus,
-  type EvidenceItem,
-  type EvidenceCategory,
-  type ID,
 } from '../domain/types';
-import { useAccount } from './AccountLayout';
-import { EmptyState } from '../components/Feedback';
-import { Chip, SourceChip } from '../components/Chips';
-import { ageLabel, formatDate } from '../lib/format';
-
-const STATUS_LABELS: Record<ClaimStatus, string> = {
-  FACT: 'Fact',
-  HYPOTHESIS: 'Hypothesis',
-  UNKNOWN: 'Unknown',
-};
 
 export default function Thesis() {
-  const { aggregate, apply, setError } = useAccount();
-  const [generating, setGenerating] = useState(false);
-  const [genResult, setGenResult] = useState<string | null>(null);
-  const [expanded, setExpanded] = useState<ID | null>(null);
+  const { aggregate, busy, run } = useAccount();
+  const { claims, evidence } = aggregate;
 
-  const evidenceByCategory = useMemo(() => {
-    const map = new Map<EvidenceCategory | 'uncategorized', EvidenceItem[]>();
-    for (const cat of [...EVIDENCE_CATEGORIES, 'uncategorized' as const]) {
-      map.set(cat, []);
-    }
-    for (const item of aggregate.evidence) {
-      const key = item.evidenceCategory ?? ('uncategorized' as const);
-      map.get(key)?.push(item);
-    }
-    return map;
-  }, [aggregate.evidence]);
-
-  // Find the rating claim for a category (e.g., "Engineering Scale: High").
-  const ratingForCategory = useMemo(() => {
-    const map = new Map<EvidenceCategory, string>();
-    for (const claim of aggregate.claims) {
-      if (EVIDENCE_CATEGORIES.includes(claim.category as EvidenceCategory)) {
-        map.set(claim.category as EvidenceCategory, claim.text);
-      }
-    }
-    return map;
-  }, [aggregate.claims]);
-
-  async function generate() {
-    if (aggregate.evidence.length === 0) {
-      setError('Record evidence first — a thesis without evidence is a guess.');
-      return;
-    }
-    const confirmed = window.confirm(
-      'This will replace all existing claims with AI-generated ones and update evidence statuses. The server enforces the FACT invariant — nothing becomes a FACT without a real citation. Continue?'
-    );
-    if (!confirmed) return;
-
-    setGenerating(true);
-    setGenResult(null);
-    setError(null);
-    try {
-      const response = await api.generateThesis(aggregate.account.id, aggregate.rev);
-      if (response.insufficientEvidence) {
-        setGenResult(response.reason ?? 'The evidence is insufficient to support a thesis.');
-      } else if (response.aggregate) {
-        apply(response);
-        setGenResult(`Thesis generated: ${response.aggregate.claims.length} claims.`);
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not generate the thesis.');
-    } finally {
-      setGenerating(false);
-    }
-  }
-
-  async function markStatus(item: EvidenceItem, status: ClaimStatus) {
-    setError(null);
-    try {
-      apply(
-        await api.updateEvidence(aggregate.account.id, item.id, aggregate.rev, { status })
-      );
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not update evidence status.');
-    }
-  }
-
-  async function removeEvidence(item: EvidenceItem) {
-    if (!window.confirm(`Remove this evidence item?`)) return;
-    setError(null);
-    try {
-      apply(await api.deleteEvidence(aggregate.account.id, item.id, aggregate.rev));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Could not remove evidence.');
-    }
-  }
-
-  function renderEvidenceItem(item: EvidenceItem) {
-    const status = item.status;
-    const isExpanded = expanded === item.id;
-
-    return (
-      <li key={item.id} className="thesis-evidence-item">
-        <div className="thesis-evidence-head">
-          <span className={`thesis-status-dot ${status?.toLowerCase() ?? 'unmarked'}`}>
-            {status ? STATUS_LABELS[status] : 'Unmarked'}
-          </span>
-          <SourceChip sourceType={item.sourceType} />
-          {item.sourceRef && <span className="subtle">{item.sourceRef}</span>}
-          <span className="subtle">
-            {formatDate(item.asOf)} ({ageLabel(item.asOf)})
-          </span>
-          {item.externalUrl && (
-            <a href={item.externalUrl} target="_blank" rel="noreferrer" className="link-button">
-              Open source
-            </a>
-          )}
-        </div>
-
-        <blockquote>{item.verbatim}</blockquote>
-
-        {isExpanded && (item.whyItMatters || item.implicationForFactory || item.nextDiscoveryQuestion) && (
-          <div className="thesis-evidence-analysis">
-            {item.whyItMatters && (
-              <p className="evidence-analysis">
-                <strong>Why it matters:</strong> {item.whyItMatters}
-              </p>
-            )}
-            {item.implicationForFactory && (
-              <p className="evidence-analysis">
-                <strong>For Factory:</strong> {item.implicationForFactory}
-              </p>
-            )}
-            {item.nextDiscoveryQuestion && (
-              <p className="evidence-analysis">
-                <strong>Next question:</strong> {item.nextDiscoveryQuestion}
-              </p>
-            )}
-          </div>
-        )}
-
-        <div className="thesis-evidence-actions">
-          {item.whyItMatters && (
-            <button
-              type="button"
-              className="link-button"
-              onClick={() => setExpanded(isExpanded ? null : item.id)}
-            >
-              {isExpanded ? 'Hide details' : 'Details'}
-            </button>
-          )}
-          {status !== 'FACT' && (
-            <button
-              type="button"
-              className="link-button"
-              onClick={() => markStatus(item, 'FACT')}
-            >
-              Mark as Fact
-            </button>
-          )}
-          {status !== 'HYPOTHESIS' && (
-            <button
-              type="button"
-              className="link-button"
-              onClick={() => markStatus(item, 'HYPOTHESIS')}
-            >
-              Mark as Hypothesis
-            </button>
-          )}
-          <button
-            type="button"
-            className="link-button danger-quiet"
-            onClick={() => removeEvidence(item)}
-          >
-            Remove
-          </button>
-        </div>
-      </li>
-    );
-  }
-
-  const hasEvidence = aggregate.evidence.length > 0;
+  const ratings = RATING_CLAIM_CATEGORIES.map((category) => ({
+    category,
+    claim: claims.find((c) => c.category === category),
+  }));
+  // Ratings first, then everything else, so the four criteria read as a block.
+  const ordered = [...claims].sort(
+    (a, b) => rank(a.category) - rank(b.category)
+  );
+  const unknowns = claims.filter((c) => c.status === 'UNKNOWN');
 
   return (
-    <div className="panel-stack">
-      {/* Why this account matters */}
-      <div className="card thesis-narrative-card">
-        <div className="card-head">
+    <>
+      <div className="card">
+        <div className="row between">
           <h2>Why this account matters</h2>
           <button
-            type="button"
-            className="link-button"
-            disabled={generating || !hasEvidence}
-            onClick={generate}
+            className="primary"
+            disabled={busy || evidence.length === 0}
+            title={
+              evidence.length === 0
+                ? 'Add or research evidence first — the thesis is written from the ledger.'
+                : 'Rewrite the thesis and claims from the current ledger.'
+            }
+            onClick={() =>
+              void run((rev) => api.generateThesis(aggregate.account.id, rev))
+            }
           >
-            {generating ? 'Generating…' : 'Generate thesis'}
+            {claims.length ? 'Regenerate thesis' : 'Generate thesis'}
           </button>
         </div>
-
         {aggregate.whyItMatters ? (
-          <p className="thesis-narrative">{aggregate.whyItMatters}</p>
+          <p style={{ marginTop: 8 }}>{aggregate.whyItMatters}</p>
         ) : (
-          <p className="hint">
-            {hasEvidence
-              ? 'Generate a thesis to produce the narrative, or mark evidence below as Fact or Hypothesis.'
-              : 'Record evidence first, then generate a thesis to see why this account matters.'}
+          <p className="muted" style={{ marginTop: 8 }}>
+            No thesis yet. It is written from the evidence ledger, so anything it says can be
+            traced back to a source.
           </p>
-        )}
-
-        {genResult && (
-          <p className="hint" style={{ marginTop: '0.5rem' }}>{genResult}</p>
         )}
       </div>
 
-      {/* 4 categories with evidence */}
-      {hasEvidence ? (
-        <div className="card">
-          <h2>Evidence by category ({aggregate.evidence.length})</h2>
-
-          {EVIDENCE_CATEGORIES.map((cat) => {
-            const items = evidenceByCategory.get(cat) ?? [];
-            if (items.length === 0) return null;
-            const rating = ratingForCategory.get(cat);
-            return (
-              <div key={cat} className="thesis-category-group">
-                <div className="thesis-category-head">
-                  <h3>{EVIDENCE_CATEGORY_LABELS[cat]}</h3>
-                  {rating && <Chip label={rating} tone="info" />}
-                </div>
-                <ul className="evidence-list">
-                  {items.map((item) => renderEvidenceItem(item))}
-                </ul>
+      <div className="card">
+        <h2>Qualification</h2>
+        <p className="dim">
+          Four criteria. A rating is only as strong as the evidence under it, and Right to Win
+          cannot be a fact until someone inside the account tells you something.
+        </p>
+        <div className="grid two" style={{ marginTop: 10 }}>
+          {ratings.map(({ category, claim }) => (
+            <div className="card tight" key={category}>
+              <div className="row between">
+                <h3>{CLAIM_CATEGORY_LABELS[category]}</h3>
+                <StatusBadge status={claim?.status} />
               </div>
-            );
-          })}
+              {claim ? (
+                <>
+                  <p style={{ marginTop: 6 }}>{claim.text}</p>
+                  <Citations ids={claim.evidenceIds} evidence={evidence} />
+                </>
+              ) : (
+                <p className="muted" style={{ marginTop: 6 }}>
+                  Not assessed.
+                </p>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
 
-          {/* Uncategorized evidence (old accounts) */}
-          {(() => {
-            const items = evidenceByCategory.get('uncategorized' as const) ?? [];
-            if (items.length === 0) return null;
-            return (
-              <div className="thesis-category-group">
-                <div className="thesis-category-head">
-                  <h3>Uncategorized</h3>
-                </div>
-                <ul className="evidence-list">
-                  {items.map((item) => renderEvidenceItem(item))}
-                </ul>
-              </div>
-            );
-          })()}
-        </div>
-      ) : (
+      {unknowns.length > 0 ? (
         <div className="card">
-          <EmptyState title="No evidence yet.">
-            <p>
-              Record evidence to start building the account thesis. Each piece of evidence
-              can be marked as a Fact or Hypothesis once recorded.
-            </p>
-          </EmptyState>
+          <h2>Open unknowns</h2>
+          <p className="dim">
+            These are the things that have to be true. Each one is a discovery question, not a
+            gap in the write-up.
+          </p>
+          <ul style={{ margin: '8px 0 0', paddingLeft: 18 }}>
+            {unknowns.map((claim) => (
+              <li key={claim.id}>{claim.text}</li>
+            ))}
+          </ul>
         </div>
-      )}
+      ) : null}
+
+      <div className="card">
+        <h2>All claims</h2>
+        {claims.length === 0 ? (
+          <Empty>No claims yet.</Empty>
+        ) : (
+          <div className="grid" style={{ marginTop: 10 }}>
+            {ordered.map((claim) => (
+              <ClaimRow key={claim.id} claim={claim} />
+            ))}
+          </div>
+        )}
+      </div>
+
+      <AddClaim />
+    </>
+  );
+}
+
+function rank(category: ClaimCategory): number {
+  const index = RATING_CLAIM_CATEGORIES.indexOf(category);
+  return index === -1 ? RATING_CLAIM_CATEGORIES.length : index;
+}
+
+function ClaimRow({ claim }: { claim: Claim }) {
+  const { aggregate, busy, run } = useAccount();
+  const stale = isStale(claim, aggregate.evidence);
+
+  const patch = (payload: Record<string, unknown>) =>
+    void run((rev) => api.patch(aggregate.account.id, 'claims', claim.id, rev, payload));
+
+  return (
+    <div className="card tight">
+      <div className="row between">
+        <div className="spread">
+          <div className="row">
+            <span className="badge">{CLAIM_CATEGORY_LABELS[claim.category]}</span>
+            <StatusBadge status={claim.status} />
+            {stale ? <span className="badge stale">Stale</span> : null}
+          </div>
+          <p style={{ marginTop: 6 }}>{claim.text}</p>
+          <Citations ids={claim.evidenceIds} evidence={aggregate.evidence} />
+          <div className="dim" style={{ marginTop: 4 }}>
+            As of {formatDate(claim.asOf)}
+            {claim.reviewedAt ? ` · reviewed ${formatDate(claim.reviewedAt)}` : ''}
+          </div>
+        </div>
+        <div className="row">
+          <select
+            value={claim.status}
+            disabled={busy}
+            onChange={(e) => patch({ status: e.target.value as ClaimStatus })}
+          >
+            {CLAIM_STATUSES.map((status) => (
+              <option key={status} value={status}>
+                {status}
+              </option>
+            ))}
+          </select>
+          {stale ? (
+            <button className="small" disabled={busy} onClick={() => patch({ revalidate: true })}>
+              Still true
+            </button>
+          ) : null}
+          <button
+            className="small danger"
+            disabled={busy}
+            onClick={() =>
+              void run((rev) => api.remove(aggregate.account.id, 'claims', claim.id, rev))
+            }
+          >
+            Delete
+          </button>
+        </div>
+      </div>
     </div>
+  );
+}
+
+function AddClaim() {
+  const { aggregate, busy, run } = useAccount();
+  const [text, setText] = useState('');
+  const [category, setCategory] = useState<ClaimCategory>('devin_fit');
+  const [status, setStatus] = useState<ClaimStatus>('HYPOTHESIS');
+  const [evidenceIds, setEvidenceIds] = useState<string[]>([]);
+
+  async function submit(event: React.FormEvent) {
+    event.preventDefault();
+    const saved = await run((rev) =>
+      api.create(aggregate.account.id, 'claims', rev, {
+        text,
+        category,
+        status,
+        evidenceIds: status === 'UNKNOWN' ? [] : evidenceIds,
+      })
+    );
+    if (saved) {
+      setText('');
+      setEvidenceIds([]);
+    }
+  }
+
+  return (
+    <Disclosure summary="Add a claim">
+      <form onSubmit={submit}>
+        <Field label="Claim">
+          <textarea
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="Platform team owns a 400-repo Java 8 estate with an internal EOL deadline of Q3."
+          />
+        </Field>
+        <div className="grid two">
+          <Field label="Category">
+            <select
+              value={category}
+              onChange={(e) => setCategory(e.target.value as ClaimCategory)}
+            >
+              {CLAIM_CATEGORIES.map((c) => (
+                <option key={c} value={c}>
+                  {CLAIM_CATEGORY_LABELS[c]}
+                </option>
+              ))}
+            </select>
+          </Field>
+          <Field
+            label="Status"
+            hint="A fact needs a citation from a verifiable source. An unknown cannot cite anything."
+          >
+            <select value={status} onChange={(e) => setStatus(e.target.value as ClaimStatus)}>
+              {CLAIM_STATUSES.map((s) => (
+                <option key={s} value={s}>
+                  {s}
+                </option>
+              ))}
+            </select>
+          </Field>
+        </div>
+        {status !== 'UNKNOWN' ? (
+          <Field label="Evidence">
+            <EvidencePicker
+              evidence={aggregate.evidence}
+              selected={evidenceIds}
+              onChange={setEvidenceIds}
+            />
+          </Field>
+        ) : null}
+        <button className="primary" disabled={busy || !text.trim()}>
+          Save claim
+        </button>
+      </form>
+    </Disclosure>
   );
 }

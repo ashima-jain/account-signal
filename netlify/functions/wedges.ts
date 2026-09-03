@@ -1,250 +1,181 @@
-/**
- * Wedge CRUD.
- *
- * A wedge is a specific use case where Factory's capabilities solve a
- * business + technical problem at the account. Wedges move through a
- * lifecycle: candidate → testing → validated (or disqualified).
- *
- * Disqualification requires a reason and optionally cites evidence. Once
- * disqualified, a wedge stays disqualified — it is not deleted, so the
- * record of why we walked away is preserved.
- */
-
 import type { Config, Context } from '@netlify/functions';
-import { appendEvent, mutateAggregate, newEvent, newId, readAggregate } from '../lib/store';
 import {
-  BadRequestError,
-  error,
-  expectedRev,
-  jsonWithRev,
-  mutationResult,
+  aggregateResponse,
+  errorResponse,
+  expectedRevOf,
+  handle,
+  InvariantViolation,
+  json,
+  methodNotAllowed,
+  NotFound,
+  oneOf,
+  optionalString,
   readJson,
   requireString,
-  toResponse,
+  stringArray,
 } from '../lib/http';
+import { appendEvent, mutateAggregate, newId, readAggregate } from '../lib/store';
 import {
+  DEVIN_USE_CASES,
   WEDGE_STATUSES,
-  type ID,
   type Wedge,
-  type WedgeStatus,
 } from '../../src/domain/types';
 
-export const config: Config = {
-  path: [
-    '/api/accounts/:accountId/wedges',
-    '/api/accounts/:accountId/wedges/:wedgeId',
-  ],
-};
+export default async (request: Request, context: Context): Promise<Response> =>
+  handle(request, async () => {
+    const { id, wid } = context.params;
 
-export default async (req: Request, context: Context): Promise<Response> => {
-  const accountId = context.params.accountId;
-  const wedgeId = context.params.wedgeId;
-
-  try {
-    if (!accountId) return error(400, 'Missing account id.');
-
-    if (!wedgeId) {
-      if (req.method === 'GET') return await listWedges(accountId);
-      if (req.method === 'POST') return await addWedge(req, accountId);
-      return error(405, `${req.method} is not supported on this route.`);
+    if (request.method === 'GET') {
+      const loaded = await readAggregate(id);
+      if (!loaded) return errorResponse('Account not found.', 404);
+      return json(loaded.aggregate.wedges);
     }
 
-    if (req.method === 'PATCH' || req.method === 'PUT') {
-      return await updateWedge(req, accountId, wedgeId);
-    }
-    if (req.method === 'DELETE') return await removeWedge(req, accountId, wedgeId);
-    return error(405, `${req.method} is not supported on this route.`);
-  } catch (err) {
-    return toResponse(err);
-  }
-};
+    if (request.method === 'POST') return addWedge(request, id);
+    if (request.method === 'PATCH' && wid) return updateWedge(request, id, wid);
+    if (request.method === 'DELETE' && wid) return removeWedge(request, id, wid);
+    return methodNotAllowed(request.method);
+  });
 
-function parseStatus(value: unknown): WedgeStatus {
-  if (value === undefined) return 'candidate';
-  if (typeof value !== 'string' || !WEDGE_STATUSES.includes(value as WedgeStatus)) {
-    throw new BadRequestError(`"status" must be one of: ${WEDGE_STATUSES.join(', ')}.`);
-  }
-  return value as WedgeStatus;
-}
-
-function parseStringArray(value: unknown, field: string): string[] {
-  if (value === undefined || value === null) return [];
-  if (!Array.isArray(value) || value.some((v) => typeof v !== 'string')) {
-    throw new BadRequestError(`"${field}" must be an array of strings.`);
-  }
-  return value as string[];
-}
-
-function parseIdArray(value: unknown, field: string): ID[] {
-  if (value === undefined || value === null) return [];
-  if (!Array.isArray(value) || value.some((v) => typeof v !== 'string')) {
-    throw new BadRequestError(`"${field}" must be an array of IDs.`);
-  }
-  return value as ID[];
-}
-
-function optionalString(value: unknown, field: string): string | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (typeof value !== 'string') throw new BadRequestError(`"${field}" must be a string.`);
-  return value.trim() || undefined;
-}
-
-async function listWedges(accountId: string): Promise<Response> {
-  const loaded = await readAggregate(accountId);
-  if (!loaded) return error(404, 'Account not found.');
-  return jsonWithRev(loaded.aggregate.wedges, loaded.aggregate.rev);
-}
-
-async function addWedge(req: Request, accountId: string): Promise<Response> {
-  const body = await readJson<Record<string, unknown>>(req);
-  const now = new Date().toISOString();
+async function addWedge(request: Request, id: string): Promise<Response> {
+  const body = await readJson<Record<string, unknown>>(request);
 
   const wedge: Wedge = {
     id: newId(),
     useCase: requireString(body.useCase, 'useCase'),
-    businessProblem: requireString(body.businessProblem, 'businessProblem'),
-    technicalProblem: requireString(body.technicalProblem, 'technicalProblem'),
-    whyFactory: requireString(body.whyFactory, 'whyFactory'),
+    devinUseCase: oneOf(body.devinUseCase, DEVIN_USE_CASES, 'devinUseCase', 'other'),
+    businessProblem: optionalString(body.businessProblem, 'businessProblem') ?? '',
+    technicalProblem: optionalString(body.technicalProblem, 'technicalProblem') ?? '',
+    whyDevin: optionalString(body.whyDevin, 'whyDevin') ?? '',
     likelyOwnerRole: optionalString(body.likelyOwnerRole, 'likelyOwnerRole') ?? '',
     sponsorRole: optionalString(body.sponsorRole, 'sponsorRole') ?? '',
-    evidenceIds: parseIdArray(body.evidenceIds, 'evidenceIds'),
+    evidenceIds: stringArray(body.evidenceIds, 'evidenceIds'),
     discoveryQuestion: optionalString(body.discoveryQuestion, 'discoveryQuestion') ?? '',
-    disqualifiers: parseStringArray(body.disqualifiers, 'disqualifiers'),
+    disqualifiers: stringArray(body.disqualifiers, 'disqualifiers'),
     proofPoints: [],
-    status: 'candidate',
-    createdAt: now,
+    status: oneOf(body.status, WEDGE_STATUSES, 'status', 'candidate'),
+    createdAt: new Date().toISOString(),
   };
 
-  const outcome = await mutateAggregate(accountId, expectedRev(req), (aggregate) => {
-    // Validate evidence IDs exist.
-    const evidenceIds = new Set(aggregate.evidence.map((e) => e.id));
-    for (const eid of wedge.evidenceIds) {
-      if (!evidenceIds.has(eid)) {
-        throw new BadRequestError(`Evidence ${eid} does not exist on this account.`);
-      }
-    }
-
-    aggregate.wedges.push(wedge);
-    appendEvent(
-      aggregate,
-      newEvent('wedge_added', `Wedge added: ${wedge.useCase}.`, {
-        entityRef: `wedge:${wedge.id}`,
-      })
+  const updated = await mutateAggregate(id, expectedRevOf(request), (aggregate) => {
+    const unknown = wedge.evidenceIds.filter(
+      (eid) => !aggregate.evidence.some((e) => e.id === eid)
     );
-    return wedge;
+    if (unknown.length > 0) {
+      throw new InvariantViolation(`Cited evidence does not exist: ${unknown.join(', ')}.`);
+    }
+    aggregate.wedges.push(wedge);
+    appendEvent(aggregate, 'wedge_added', wedge.useCase, { entityRef: `wedge:${wedge.id}` });
   });
 
-  if (!outcome) return error(404, 'Account not found.');
-  return mutationResult(outcome.aggregate, outcome.result.id, 201);
+  if (!updated) return errorResponse('Account not found.', 404);
+  return aggregateResponse(updated, 201);
 }
 
-async function updateWedge(req: Request, accountId: string, wedgeId: string): Promise<Response> {
-  const body = await readJson<Record<string, unknown>>(req);
+async function updateWedge(request: Request, id: string, wid: string): Promise<Response> {
+  const body = await readJson<Record<string, unknown>>(request);
 
-  const outcome = await mutateAggregate(accountId, expectedRev(req), (aggregate) => {
-    const w = aggregate.wedges.find((wg) => wg.id === wedgeId);
-    if (!w) return null;
+  const updated = await mutateAggregate(id, expectedRevOf(request), (aggregate) => {
+    const wedge = aggregate.wedges.find((w) => w.id === wid);
+    if (!wedge) throw new NotFound('Wedge not found.');
 
-    const previousStatus = w.status;
+    const nextStatus =
+      body.status !== undefined
+        ? oneOf(body.status, WEDGE_STATUSES, 'status', wedge.status)
+        : wedge.status;
 
-    if (body.useCase !== undefined) w.useCase = requireString(body.useCase, 'useCase');
-    if (body.businessProblem !== undefined) w.businessProblem = requireString(body.businessProblem, 'businessProblem');
-    if (body.technicalProblem !== undefined) w.technicalProblem = requireString(body.technicalProblem, 'technicalProblem');
-    if (body.whyFactory !== undefined) w.whyFactory = requireString(body.whyFactory, 'whyFactory');
-    if (body.likelyOwnerRole !== undefined) w.likelyOwnerRole = optionalString(body.likelyOwnerRole, 'likelyOwnerRole') ?? '';
-    if (body.sponsorRole !== undefined) w.sponsorRole = optionalString(body.sponsorRole, 'sponsorRole') ?? '';
-    if (body.evidenceIds !== undefined) {
-      const evidenceIds = new Set(aggregate.evidence.map((e) => e.id));
-      for (const eid of parseIdArray(body.evidenceIds, 'evidenceIds')) {
-        if (!evidenceIds.has(eid)) {
-          throw new BadRequestError(`Evidence ${eid} does not exist on this account.`);
-        }
+    // Disqualification is terminal. Reviving a killed use case is how a deal
+    // ends up re-litigating a question the customer already answered.
+    if (wedge.status === 'disqualified' && nextStatus !== 'disqualified') {
+      throw new InvariantViolation(
+        'A disqualified wedge cannot be revived. Create a new one if the situation changed.'
+      );
+    }
+
+    if (nextStatus === 'disqualified' && wedge.status !== 'disqualified') {
+      const reason = requireString(body.disqualifiedReason, 'disqualifiedReason');
+      const evidenceId = optionalString(body.disqualifyingEvidenceId, 'disqualifyingEvidenceId');
+      if (evidenceId && !aggregate.evidence.some((e) => e.id === evidenceId)) {
+        throw new InvariantViolation('The disqualifying evidence does not exist on this account.');
       }
-      w.evidenceIds = parseIdArray(body.evidenceIds, 'evidenceIds');
+      wedge.disqualifiedReason = reason;
+      wedge.disqualifyingEvidenceId = evidenceId;
+      wedge.status = 'disqualified';
+      appendEvent(aggregate, 'wedge_disqualified', wedge.useCase, {
+        entityRef: `wedge:${wedge.id}`,
+        reason,
+      });
+      return;
+    }
+
+    if (body.useCase !== undefined) wedge.useCase = requireString(body.useCase, 'useCase');
+    if (body.devinUseCase !== undefined) {
+      wedge.devinUseCase = oneOf(body.devinUseCase, DEVIN_USE_CASES, 'devinUseCase', wedge.devinUseCase);
+    }
+    if (body.businessProblem !== undefined) {
+      wedge.businessProblem = optionalString(body.businessProblem, 'businessProblem') ?? '';
+    }
+    if (body.technicalProblem !== undefined) {
+      wedge.technicalProblem = optionalString(body.technicalProblem, 'technicalProblem') ?? '';
+    }
+    if (body.whyDevin !== undefined) {
+      wedge.whyDevin = optionalString(body.whyDevin, 'whyDevin') ?? '';
+    }
+    if (body.likelyOwnerRole !== undefined) {
+      wedge.likelyOwnerRole = optionalString(body.likelyOwnerRole, 'likelyOwnerRole') ?? '';
+    }
+    if (body.sponsorRole !== undefined) {
+      wedge.sponsorRole = optionalString(body.sponsorRole, 'sponsorRole') ?? '';
     }
     if (body.discoveryQuestion !== undefined) {
-      w.discoveryQuestion = optionalString(body.discoveryQuestion, 'discoveryQuestion') ?? '';
+      wedge.discoveryQuestion = optionalString(body.discoveryQuestion, 'discoveryQuestion') ?? '';
     }
-    if (body.disqualifiers !== undefined) w.disqualifiers = parseStringArray(body.disqualifiers, 'disqualifiers');
-
-    // Status transitions.
-    if (body.status !== undefined) {
-      const newStatus = parseStatus(body.status);
-
-      // Disqualification requires a reason.
-      if (newStatus === 'disqualified' && previousStatus !== 'disqualified') {
-        const reason = optionalString(body.disqualifiedReason, 'disqualifiedReason');
-        if (!reason) {
-          throw new BadRequestError('Disqualifying a wedge requires a "disqualifiedReason".');
-        }
-        w.disqualifiedReason = reason;
-        w.disqualifyingEvidenceId = optionalString(body.disqualifyingEvidenceId, 'disqualifyingEvidenceId');
+    if (body.disqualifiers !== undefined) {
+      wedge.disqualifiers = stringArray(body.disqualifiers, 'disqualifiers');
+    }
+    if (body.evidenceIds !== undefined) {
+      const ids = stringArray(body.evidenceIds, 'evidenceIds');
+      const unknown = ids.filter((eid) => !aggregate.evidence.some((e) => e.id === eid));
+      if (unknown.length > 0) {
+        throw new InvariantViolation(`Cited evidence does not exist: ${unknown.join(', ')}.`);
       }
-
-      // Cannot re-qualify a disqualified wedge.
-      if (previousStatus === 'disqualified' && newStatus !== 'disqualified') {
-        throw new BadRequestError('A disqualified wedge cannot be re-qualified. Create a new wedge instead.');
-      }
-
-      w.status = newStatus;
-
-      if (newStatus === 'disqualified' && previousStatus !== 'disqualified') {
-        appendEvent(
-          aggregate,
-          newEvent(
-            'wedge_disqualified',
-            `Wedge disqualified: ${w.useCase} — ${w.disqualifiedReason}.`,
-            { entityRef: `wedge:${w.id}` }
-          )
-        );
-      }
+      wedge.evidenceIds = ids;
     }
 
-    // Update disqualifiedReason independently.
-    if (body.disqualifiedReason !== undefined && w.status === 'disqualified') {
-      w.disqualifiedReason = optionalString(body.disqualifiedReason, 'disqualifiedReason');
+    // Calling a wedge validated on our own say-so is wishful thinking.
+    if (nextStatus === 'validated' && wedge.evidenceIds.length === 0) {
+      throw new InvariantViolation(
+        'A validated wedge must cite the evidence that validated it.'
+      );
     }
+    wedge.status = nextStatus;
 
-    appendEvent(
-      aggregate,
-      newEvent('wedge_added', `Wedge updated: ${w.useCase}.`, {
-        entityRef: `wedge:${w.id}`,
-      })
-    );
-
-    return w;
+    appendEvent(aggregate, 'wedge_updated', `${wedge.useCase} — ${wedge.status}.`, {
+      entityRef: `wedge:${wedge.id}`,
+    });
   });
 
-  if (!outcome) return error(404, 'Account not found.');
-  if (!outcome.result) return error(404, 'Wedge not found.');
-  return mutationResult(outcome.aggregate, outcome.result.id);
+  if (!updated) return errorResponse('Account not found.', 404);
+  return aggregateResponse(updated);
 }
 
-async function removeWedge(req: Request, accountId: string, wedgeId: string): Promise<Response> {
-  const outcome = await mutateAggregate(accountId, expectedRev(req), (aggregate) => {
-    const w = aggregate.wedges.find((wg) => wg.id === wedgeId);
-    if (!w) return null;
-
-    aggregate.wedges = aggregate.wedges.filter((wg) => wg.id !== wedgeId);
-
-    // Clear wedge references from actions.
+async function removeWedge(request: Request, id: string, wid: string): Promise<Response> {
+  const updated = await mutateAggregate(id, expectedRevOf(request), (aggregate) => {
+    const wedge = aggregate.wedges.find((w) => w.id === wid);
+    if (!wedge) throw new NotFound('Wedge not found.');
+    aggregate.wedges = aggregate.wedges.filter((w) => w.id !== wid);
     for (const action of aggregate.actions) {
-      if (action.wedgeId === wedgeId) {
-        action.wedgeId = undefined;
-      }
+      if (action.wedgeId === wid) action.wedgeId = undefined;
     }
-
-    appendEvent(
-      aggregate,
-      newEvent('wedge_added', `Wedge removed: ${w.useCase}.`, {
-        entityRef: `wedge:${wedgeId}`,
-        reason: 'Deleted by user.',
-      })
-    );
-    return w;
+    appendEvent(aggregate, 'wedge_updated', `${wedge.useCase} removed.`, {
+      entityRef: `wedge:${wid}`,
+    });
   });
 
-  if (!outcome) return error(404, 'Account not found.');
-  if (!outcome.result) return error(404, 'Wedge not found.');
-  return mutationResult(outcome.aggregate, wedgeId);
+  if (!updated) return errorResponse('Account not found.', 404);
+  return aggregateResponse(updated);
 }
+
+export const config: Config = {
+  path: ['/api/accounts/:id/wedges', '/api/accounts/:id/wedges/:wid'],
+};

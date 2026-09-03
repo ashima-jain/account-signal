@@ -1,278 +1,187 @@
-/**
- * Evidence ingestion.
- *
- * Every other entity cites evidence, so this endpoint is the only way facts
- * enter the system. POST is idempotent on (sourceSystem, externalId) so a
- * future Granola/Gmail/CRM sync can re-send the same record without creating
- * duplicates.
- */
-
 import type { Config, Context } from '@netlify/functions';
 import {
-  appendEvent,
-  mutateAggregate,
-  newEvent,
-  newId,
-  readAggregate,
-} from '../lib/store';
-import {
-  BadRequestError,
-  error,
-  expectedRev,
-  jsonWithRev,
-  mutationResult,
+  aggregateResponse,
+  errorResponse,
+  expectedRevOf,
+  handle,
+  InvariantViolation,
+  isoDate,
+  json,
+  methodNotAllowed,
+  NotFound,
+  oneOf,
+  optionalHttpUrl,
+  optionalString,
   readJson,
   requireString,
-  toResponse,
 } from '../lib/http';
+import { appendEvent, mutateAggregate, newId, readAggregate } from '../lib/store';
+import { reconcileClaims } from '../../src/domain/claims';
 import {
+  CLAIM_STATUSES,
+  EVIDENCE_CATEGORIES,
+  isVerifiableSource,
   SOURCE_SYSTEMS,
   SOURCE_TYPES,
   type ClaimStatus,
   type EvidenceItem,
-  type SourceSystem,
-  type SourceType,
 } from '../../src/domain/types';
-import { reconcileClaims } from '../../src/domain/claims';
 
-export const config: Config = {
-  path: [
-    '/api/accounts/:accountId/evidence',
-    '/api/accounts/:accountId/evidence/:evidenceId',
-  ],
-};
+export default async (request: Request, context: Context): Promise<Response> =>
+  handle(request, async () => {
+    const { id, eid } = context.params;
 
-export default async (req: Request, context: Context): Promise<Response> => {
-  const accountId = context.params.accountId;
-  const evidenceId = context.params.evidenceId;
-
-  try {
-    if (!accountId) return error(400, 'Missing account id.');
-
-    if (!evidenceId) {
-      if (req.method === 'GET') return await listEvidence(accountId);
-      if (req.method === 'POST') return await addEvidence(req, accountId);
-      return error(405, `${req.method} is not supported on this route.`);
+    if (request.method === 'GET') {
+      const loaded = await readAggregate(id);
+      if (!loaded) return errorResponse('Account not found.', 404);
+      return json(loaded.aggregate.evidence);
     }
 
-    if (req.method === 'PATCH' || req.method === 'PUT') {
-      return await updateEvidence(req, accountId, evidenceId);
-    }
-    if (req.method === 'DELETE') return await removeEvidence(req, accountId, evidenceId);
-    return error(405, `${req.method} is not supported on this route.`);
-  } catch (err) {
-    return toResponse(err);
-  }
-};
+    if (request.method === 'POST') return addEvidence(request, id);
+    if (request.method === 'PATCH' && eid) return updateEvidence(request, id, eid);
+    if (request.method === 'DELETE' && eid) return removeEvidence(request, id, eid);
+    return methodNotAllowed(request.method);
+  });
 
-function parseSourceType(value: unknown): SourceType {
-  if (typeof value !== 'string' || !SOURCE_TYPES.includes(value as SourceType)) {
-    throw new BadRequestError(`"sourceType" must be one of: ${SOURCE_TYPES.join(', ')}.`);
-  }
-  return value as SourceType;
-}
-
-function parseSourceSystem(value: unknown): SourceSystem {
-  if (value === undefined) return 'manual';
-  if (typeof value !== 'string' || !SOURCE_SYSTEMS.includes(value as SourceSystem)) {
-    throw new BadRequestError(
-      `"sourceSystem" must be one of: ${SOURCE_SYSTEMS.join(', ')}.`
-    );
-  }
-  return value as SourceSystem;
-}
-
-function optionalString(value: unknown, field: string): string | undefined {
-  if (value === undefined || value === null) return undefined;
-  if (typeof value !== 'string') throw new BadRequestError(`"${field}" must be a string.`);
-  return value.trim() || undefined;
-}
-
-function parseTimestamp(value: unknown, field: string, fallback: string): string {
-  if (value === undefined || value === null) return fallback;
-  if (typeof value !== 'string') throw new BadRequestError(`"${field}" must be a string.`);
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) {
-    throw new BadRequestError(`"${field}" is not a valid date.`);
-  }
-  return parsed.toISOString();
-}
-
-async function listEvidence(accountId: string): Promise<Response> {
-  const loaded = await readAggregate(accountId);
-  if (!loaded) return error(404, 'Account not found.');
-  const sorted = [...loaded.aggregate.evidence].sort((a, b) => b.asOf.localeCompare(a.asOf));
-  return jsonWithRev(sorted, loaded.aggregate.rev);
-}
-
-async function addEvidence(req: Request, accountId: string): Promise<Response> {
-  const body = await readJson<Record<string, unknown>>(req);
+async function addEvidence(request: Request, id: string): Promise<Response> {
+  const body = await readJson<Record<string, unknown>>(request);
   const now = new Date().toISOString();
-
-  const verbatim = requireString(body.verbatim, 'verbatim');
-  const sourceType = parseSourceType(body.sourceType);
-  const sourceSystem = parseSourceSystem(body.sourceSystem);
-  const externalId = optionalString(body.externalId, 'externalId');
-  const stakeholderId = optionalString(body.stakeholderId, 'stakeholderId');
 
   const item: EvidenceItem = {
     id: newId(),
-    sourceType,
-    sourceSystem,
+    sourceType: oneOf(body.sourceType, SOURCE_TYPES, 'sourceType'),
+    sourceSystem: oneOf(body.sourceSystem, SOURCE_SYSTEMS, 'sourceSystem', 'manual'),
     sourceRef: optionalString(body.sourceRef, 'sourceRef'),
-    externalUrl: optionalString(body.externalUrl, 'externalUrl'),
-    externalId,
-    verbatim,
+    externalUrl: optionalHttpUrl(body.externalUrl, 'externalUrl'),
+    externalId: optionalString(body.externalId, 'externalId'),
+    verbatim: requireString(body.verbatim, 'verbatim'),
     capturedAt: now,
-    // asOf defaults to now but is meant to be the date the thing was true;
-    // staleness is computed from it, not from capture time.
-    asOf: parseTimestamp(body.asOf, 'asOf', now),
+    asOf: isoDate(body.asOf, 'asOf', now),
     confidential: body.confidential === true,
-    stakeholderId,
+    stakeholderId: optionalString(body.stakeholderId, 'stakeholderId'),
+    evidenceCategory: body.evidenceCategory
+      ? oneOf(body.evidenceCategory, EVIDENCE_CATEGORIES, 'evidenceCategory')
+      : undefined,
+    signalType: optionalString(body.signalType, 'signalType'),
+    whyItMatters: optionalString(body.whyItMatters, 'whyItMatters'),
+    implicationForDevin: optionalString(body.implicationForDevin, 'implicationForDevin'),
+    nextDiscoveryQuestion: optionalString(body.nextDiscoveryQuestion, 'nextDiscoveryQuestion'),
+    status: body.status ? oneOf(body.status, CLAIM_STATUSES, 'status') : undefined,
   };
 
-  const outcome = await mutateAggregate(accountId, expectedRev(req), (aggregate) => {
-    if (stakeholderId && !aggregate.stakeholders.some((s) => s.id === stakeholderId)) {
-      throw new BadRequestError('stakeholderId does not exist on this account.');
-    }
+  assertStatusIsSupportable(item.status, item);
 
-    // Idempotency: a re-synced external record must not duplicate.
-    if (externalId) {
-      const existing = aggregate.evidence.find(
-        (e) => e.externalId === externalId && e.sourceSystem === sourceSystem
-      );
-      if (existing) return { item: existing, created: false };
+  const updated = await mutateAggregate(id, expectedRevOf(request), (aggregate) => {
+    // Re-syncing the same upstream record must not duplicate it.
+    if (item.externalId) {
+      const existing = aggregate.evidence.find((e) => e.externalId === item.externalId);
+      if (existing) {
+        Object.assign(existing, { ...item, id: existing.id, capturedAt: existing.capturedAt });
+        appendEvent(aggregate, 'evidence_updated', `Re-ingested evidence ${item.externalId}.`, {
+          entityRef: `evidence:${existing.id}`,
+        });
+        return;
+      }
     }
 
     aggregate.evidence.push(item);
-    appendEvent(
-      aggregate,
-      newEvent(
-        'evidence_added',
-        `Evidence added (${sourceType}${item.sourceRef ? `: ${item.sourceRef}` : ''}).`,
-        { entityRef: `evidence:${item.id}` }
-      )
-    );
-    return { item, created: true };
+    appendEvent(aggregate, 'evidence_added', truncate(item.verbatim), {
+      entityRef: `evidence:${item.id}`,
+    });
   });
 
-  if (!outcome) return error(404, 'Account not found.');
-  return mutationResult(
-    outcome.aggregate,
-    outcome.result.item.id,
-    outcome.result.created ? 201 : 200
-  );
+  if (!updated) return errorResponse('Account not found.', 404);
+  return aggregateResponse(updated, 201);
 }
 
-async function updateEvidence(
-  req: Request,
-  accountId: string,
-  evidenceId: string
-): Promise<Response> {
-  const body = await readJson<Record<string, unknown>>(req);
+async function updateEvidence(request: Request, id: string, eid: string): Promise<Response> {
+  const body = await readJson<Record<string, unknown>>(request);
 
-  const outcome = await mutateAggregate(accountId, expectedRev(req), (aggregate) => {
-    const item = aggregate.evidence.find((e) => e.id === evidenceId);
-    if (!item) return null;
+  const updated = await mutateAggregate(id, expectedRevOf(request), (aggregate) => {
+    const item = aggregate.evidence.find((e) => e.id === eid);
+    if (!item) throw new NotFound('Evidence not found.');
+
+    const previousStatus = item.status;
 
     if (body.verbatim !== undefined) item.verbatim = requireString(body.verbatim, 'verbatim');
-    if (body.sourceType !== undefined) item.sourceType = parseSourceType(body.sourceType);
     if (body.sourceRef !== undefined) item.sourceRef = optionalString(body.sourceRef, 'sourceRef');
     if (body.externalUrl !== undefined) {
-      item.externalUrl = optionalString(body.externalUrl, 'externalUrl');
+      item.externalUrl = optionalHttpUrl(body.externalUrl, 'externalUrl');
     }
+    if (body.asOf !== undefined) item.asOf = isoDate(body.asOf, 'asOf');
     if (body.confidential !== undefined) item.confidential = body.confidential === true;
-    if (body.asOf !== undefined) item.asOf = parseTimestamp(body.asOf, 'asOf', item.asOf);
+    if (body.evidenceCategory !== undefined) {
+      item.evidenceCategory = oneOf(body.evidenceCategory, EVIDENCE_CATEGORIES, 'evidenceCategory');
+    }
+    if (body.stakeholderId !== undefined) {
+      item.stakeholderId = optionalString(body.stakeholderId, 'stakeholderId');
+    }
     if (body.status !== undefined) {
-      const validStatuses: ClaimStatus[] = ['FACT', 'HYPOTHESIS', 'UNKNOWN'];
-      const newStatus = body.status as string;
-      if (!validStatuses.includes(newStatus as ClaimStatus)) {
-        throw new BadRequestError(`"status" must be one of: ${validStatuses.join(', ')}.`);
-      }
-      const previousStatus = item.status;
-      item.status = newStatus as ClaimStatus;
-      appendEvent(
-        aggregate,
-        newEvent(
-          'evidence_status_changed',
-          `Evidence status changed: "${item.verbatim.slice(0, 60)}…" ${previousStatus ?? 'unmarked'} → ${newStatus}.`,
-          { entityRef: `evidence:${item.id}` }
-        )
-      );
+      const status = body.status === null ? undefined : oneOf(body.status, CLAIM_STATUSES, 'status');
+      assertStatusIsSupportable(status, item);
+      item.status = status;
     }
 
-    // Downgrading a source to an inference must un-prove anything resting on it.
-    const demotions = reconcileClaims(aggregate.claims, aggregate.evidence);
-    for (const demotion of demotions) {
+    if (previousStatus !== item.status) {
       appendEvent(
         aggregate,
-        newEvent(
-          'claim_status_changed',
-          `"${demotion.claim.text}" moved from ${demotion.from} to ${demotion.to}.`,
-          { entityRef: `claim:${demotion.claim.id}`, reason: demotion.reason }
-        )
+        'evidence_status_changed',
+        `${truncate(item.verbatim)} marked ${item.status ?? 'unreviewed'}.`,
+        { entityRef: `evidence:${item.id}` }
       );
+    } else {
+      appendEvent(aggregate, 'evidence_updated', truncate(item.verbatim), {
+        entityRef: `evidence:${item.id}`,
+      });
     }
-
-    return { item, demoted: demotions.length };
   });
 
-  if (!outcome) return error(404, 'Account not found.');
-  if (!outcome.result) return error(404, 'Evidence not found.');
-  return mutationResult(outcome.aggregate, outcome.result.item.id);
+  if (!updated) return errorResponse('Account not found.', 404);
+  return aggregateResponse(updated);
 }
 
-async function removeEvidence(
-  req: Request,
-  accountId: string,
-  evidenceId: string
-): Promise<Response> {
-  const outcome = await mutateAggregate(accountId, expectedRev(req), (aggregate) => {
-    const item = aggregate.evidence.find((e) => e.id === evidenceId);
-    if (!item) return null;
+async function removeEvidence(request: Request, id: string, eid: string): Promise<Response> {
+  const updated = await mutateAggregate(id, expectedRevOf(request), (aggregate) => {
+    const item = aggregate.evidence.find((e) => e.id === eid);
+    if (!item) throw new NotFound('Evidence not found.');
 
-    aggregate.evidence = aggregate.evidence.filter((e) => e.id !== evidenceId);
-    appendEvent(
-      aggregate,
-      newEvent(
-        'evidence_removed',
-        `Evidence removed (${item.sourceType}${item.sourceRef ? `: ${item.sourceRef}` : ''}).`,
-        { entityRef: `evidence:${evidenceId}` }
-      )
+    aggregate.evidence = aggregate.evidence.filter((e) => e.id !== eid);
+    appendEvent(aggregate, 'evidence_removed', truncate(item.verbatim), {
+      entityRef: `evidence:${eid}`,
+    });
+
+    // Anything that leaned on this evidence has to give up its standing.
+    for (const demotion of reconcileClaims(aggregate.claims, aggregate.evidence)) {
+      const claim = aggregate.claims.find((c) => c.id === demotion.claimId);
+      appendEvent(
+        aggregate,
+        'claim_demoted',
+        `"${truncate(claim?.text ?? demotion.claimId)}" demoted to ${demotion.to}.`,
+        { entityRef: `claim:${demotion.claimId}`, reason: demotion.reason }
+      );
+    }
+    for (const wedge of aggregate.wedges) {
+      wedge.evidenceIds = wedge.evidenceIds.filter((wid) => wid !== eid);
+    }
+  });
+
+  if (!updated) return errorResponse('Account not found.', 404);
+  return aggregateResponse(updated);
+}
+
+/** Marking a piece of inference as a FACT is the exact move the app exists to stop. */
+function assertStatusIsSupportable(status: ClaimStatus | undefined, item: EvidenceItem): void {
+  if (status === 'FACT' && !isVerifiableSource(item.sourceType)) {
+    throw new InvariantViolation(
+      'Inference cannot be marked as a fact. Record the source that would prove it instead.'
     );
-
-    // Champion signals citing this evidence stop counting; clear the reference
-    // so the UI shows the signal as untested rather than silently ignored.
-    for (const signal of aggregate.signals) {
-      if (signal.evidenceId === evidenceId) {
-        signal.evidenceId = undefined;
-        signal.observed = false;
-        appendEvent(
-          aggregate,
-          newEvent('signal_recorded', `Champion signal "${signal.signalType}" reset.`, {
-            entityRef: `signal:${signal.id}`,
-            reason: 'The evidence supporting it was removed.',
-          })
-        );
-      }
-    }
-
-    const demotions = reconcileClaims(aggregate.claims, aggregate.evidence);
-    for (const demotion of demotions) {
-      appendEvent(
-        aggregate,
-        newEvent(
-          'claim_status_changed',
-          `"${demotion.claim.text}" moved from ${demotion.from} to ${demotion.to}.`,
-          { entityRef: `claim:${demotion.claim.id}`, reason: demotion.reason }
-        )
-      );
-    }
-
-    return { demoted: demotions.length };
-  });
-
-  if (!outcome) return error(404, 'Account not found.');
-  if (!outcome.result) return error(404, 'Evidence not found.');
-  return mutationResult(outcome.aggregate, evidenceId);
+  }
 }
+
+function truncate(text: string, max = 120): string {
+  return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
+}
+
+export const config: Config = {
+  path: ['/api/accounts/:id/evidence', '/api/accounts/:id/evidence/:eid'],
+};
