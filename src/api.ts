@@ -60,7 +60,8 @@ async function request<T>(
     throw new ApiError(message, response.status);
   }
 
-  if (payload === null) {
+  // 202 from a background function carries no body, and neither does 204.
+  if (payload === null && response.status !== 202 && response.status !== 204) {
     throw new ApiError('The server returned an unreadable response.', response.status);
   }
 
@@ -91,12 +92,11 @@ export const api = {
     request<{ deleted: boolean }>(`/api/accounts/${id}`, { method: 'DELETE' }),
 
   /**
-   * Research runs longer than a function invocation is guaranteed to live, so a
-   * timeout is not a failure — the caller polls the account until the evidence
-   * lands.
+   * Starts research. The endpoint is a background function, so this returns as
+   * soon as the run is accepted; the account's seedStatus is how the caller
+   * finds out how it ended.
    */
-  seed: (id: string) =>
-    request<AccountAggregate>(`/api/accounts/${id}/seed`, { method: 'POST' }),
+  seed: (id: string) => request<void>(`/api/accounts/${id}/seed`, { method: 'POST' }),
 
   generateThesis: (id: string, rev: number) =>
     request<AccountAggregate>(`/api/accounts/${id}/thesis/generate`, {

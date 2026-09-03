@@ -23,6 +23,7 @@ import {
   type EvidenceCategory,
   type EvidenceItem,
   type SourceType,
+  seedIsStalled,
   type Stakeholder,
   type Wedge,
 } from '../../src/domain/types';
@@ -265,7 +266,7 @@ export default async (request: Request, context: Context): Promise<Response> =>
         409
       );
     }
-    if (loaded.aggregate.seedStatus === 'running') {
+    if (loaded.aggregate.seedStatus === 'running' && !seedIsStalled(loaded.aggregate)) {
       return errorResponse('Research is already running on this account.', 409);
     }
 
@@ -276,6 +277,7 @@ export default async (request: Request, context: Context): Promise<Response> =>
     // polling instead of staring at an empty account.
     const running = await mutateAggregate(id, expectedRevOf(request), (aggregate) => {
       aggregate.seedStatus = 'running';
+      aggregate.seedStartedAt = new Date().toISOString();
       aggregate.seedError = undefined;
     });
     if (!running) return errorResponse('Account not found.', 404);
@@ -436,6 +438,11 @@ function clampRating(value: number | undefined, fallback: 1 | 2 | 3 | 4 | 5) {
   return value as 1 | 2 | 3 | 4 | 5;
 }
 
+/**
+ * A background function: research takes minutes, far past the ceiling on a
+ * synchronous invocation. The client gets 202 immediately and learns how the
+ * run ended by polling the aggregate's seedStatus.
+ */
 export const config: Config = {
   path: '/api/accounts/:id/seed',
 };

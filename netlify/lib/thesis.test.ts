@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyThesis, type ThesisResult } from './thesis';
+import { applyThesis, type ThesisResult } from '../functions/thesis';
 import {
   emptyAggregate,
   type AccountAggregate,

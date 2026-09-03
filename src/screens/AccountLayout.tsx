@@ -1,7 +1,8 @@
-import { Link, NavLink, Outlet, useParams } from 'react-router-dom';
+import { Link, NavLink, Outlet, useLocation, useParams } from 'react-router-dom';
 import { useAccountData } from '../useAccount';
 import { nextBestAction } from '../domain/nba';
 import { stageLabel } from '../domain/nba';
+import { seedIsStalled } from '../domain/types';
 
 const TABS = [
   { to: '.', label: 'Thesis', end: true },
@@ -14,7 +15,11 @@ const TABS = [
 
 export default function AccountLayout() {
   const { id } = useParams();
-  const store = useAccountData(id);
+  const location = useLocation();
+  const store = useAccountData(
+    id,
+    Boolean((location.state as { seeding?: boolean } | null)?.seeding)
+  );
   const { aggregate, loading, error, busy, seed, clearError } = store;
 
   if (loading && !aggregate) {
@@ -35,7 +40,8 @@ export default function AccountLayout() {
   }
 
   const nba = nextBestAction(aggregate);
-  const seeding = aggregate.seedStatus === 'running';
+  const stalled = seedIsStalled(aggregate);
+  const seeding = aggregate.seedStatus === 'running' && !stalled;
 
   return (
     <div className="shell">
@@ -83,9 +89,11 @@ export default function AccountLayout() {
         </div>
       ) : null}
 
-      {aggregate.seedStatus === 'failed' ? (
+      {aggregate.seedStatus === 'failed' || stalled ? (
         <div className="banner error">
-          Research failed{aggregate.seedError ? `: ${aggregate.seedError}` : '.'} Try again.
+          {stalled
+            ? 'Research stopped before it finished. Run it again.'
+            : `Research failed${aggregate.seedError ? `: ${aggregate.seedError}` : '.'} Try again.`}
         </div>
       ) : null}
 

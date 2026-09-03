@@ -26,12 +26,18 @@ export interface AccountStore {
   ) => Promise<AccountAggregate | null>;
 }
 
-export function useAccountData(id: string | undefined): AccountStore {
+/**
+ * `seedRequested` covers the gap between asking for research and the server
+ * recording that it started: the page opened by account creation polls from
+ * its first render rather than waiting for a status that is not there yet.
+ */
+export function useAccountData(id: string | undefined, seedRequested = false): AccountStore {
   const [aggregate, setAggregate] = useState<AccountAggregate | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const revRef = useRef(0);
+  const [awaitingSeed, setAwaitingSeed] = useState(seedRequested);
 
   const install = useCallback((next: AccountAggregate) => {
     revRef.current = next.rev;
@@ -55,30 +61,36 @@ export function useAccountData(id: string | undefined): AccountStore {
     void reload();
   }, [reload]);
 
-  // A seed that outlived its function invocation finishes server-side; polling
-  // is how the UI finds out.
+  // Research runs in a background function, so the result never comes back on
+  // the request that started it. Polling is how the UI finds out. It also polls
+  // while a just-requested run has yet to show up as 'running'.
+  const seedStatus = aggregate?.seedStatus;
   useEffect(() => {
-    if (aggregate?.seedStatus !== 'running') return;
+    if (seedStatus !== 'running' && !awaitingSeed) return;
+    if (awaitingSeed && (seedStatus === 'complete' || seedStatus === 'failed')) {
+      setAwaitingSeed(false);
+      return;
+    }
     const timer = setInterval(() => void reload(), 4000);
     return () => clearInterval(timer);
-  }, [aggregate?.seedStatus, reload]);
+  }, [seedStatus, awaitingSeed, reload]);
 
   const seed = useCallback(async () => {
     if (!id) return;
     setBusy(true);
     setError(null);
+    setAwaitingSeed(true);
     try {
-      install(await api.seed(id));
+      await api.seed(id);
     } catch (err) {
-      // Research outliving its invocation looks like a transport failure here,
-      // but the server has already recorded 'running' and will record how it
-      // ended. Reload and let the seed status speak.
+      // The run may still have been accepted; only a rejection the seller can
+      // act on is worth showing.
       if (err instanceof ApiError && err.status < 500) setError(messageOf(err));
-      await reload();
     } finally {
       setBusy(false);
+      await reload();
     }
-  }, [id, install, reload]);
+  }, [id, reload]);
 
   const run = useCallback(
     async (mutation: (rev: number) => Promise<AccountAggregate>) => {

@@ -631,7 +631,21 @@ export interface AccountAggregate {
   whyItMatters?: string;
   /** Set while a seed run is in flight so the UI can keep polling. */
   seedStatus?: 'running' | 'complete' | 'failed';
+  seedStartedAt?: string;
   seedError?: string;
+}
+
+/**
+ * A research run that was cut off mid-flight leaves 'running' behind forever,
+ * so a run older than the platform's own ceiling counts as abandoned and can
+ * be started again.
+ */
+export const SEED_STALE_AFTER_MS = 15 * 60 * 1000;
+
+export function seedIsStalled(aggregate: AccountAggregate, now = Date.now()): boolean {
+  if (aggregate.seedStatus !== 'running') return false;
+  if (!aggregate.seedStartedAt) return true;
+  return now - Date.parse(aggregate.seedStartedAt) > SEED_STALE_AFTER_MS;
 }
 
 /** Portfolio row, derived from the aggregate on every write. */

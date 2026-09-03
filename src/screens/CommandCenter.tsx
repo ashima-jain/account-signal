@@ -33,10 +33,10 @@ export default function CommandCenter() {
     setError(null);
     try {
       const created = await api.createAccount(companyName.trim(), domain.trim() || undefined);
-      // Research is slow and may outlive the request. The account exists either
-      // way, so the seed is left running and the account page polls for it.
-      void api.seed(created.account.id).catch(() => undefined);
-      navigate(`/accounts/${created.account.id}`);
+      // Research runs in a background function and takes minutes. Starting it is
+      // instant; the account page polls until the findings land.
+      await api.seed(created.account.id).catch(() => undefined);
+      navigate(`/accounts/${created.account.id}`, { state: { seeding: true } });
     } catch (err) {
       setError(messageOf(err));
       setCreating(false);
