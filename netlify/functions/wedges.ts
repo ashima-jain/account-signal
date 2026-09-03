@@ -7,6 +7,7 @@ import {
   InvariantViolation,
   json,
   methodNotAllowed,
+  NotFound,
   oneOf,
   optionalString,
   readJson,
@@ -21,7 +22,7 @@ import {
 } from '../../src/domain/types';
 
 export default async (request: Request, context: Context): Promise<Response> =>
-  handle(async () => {
+  handle(request, async () => {
     const { id, wid } = context.params;
 
     if (request.method === 'GET') {
@@ -74,13 +75,9 @@ async function addWedge(request: Request, id: string): Promise<Response> {
 async function updateWedge(request: Request, id: string, wid: string): Promise<Response> {
   const body = await readJson<Record<string, unknown>>(request);
 
-  let missing = false;
   const updated = await mutateAggregate(id, expectedRevOf(request), (aggregate) => {
     const wedge = aggregate.wedges.find((w) => w.id === wid);
-    if (!wedge) {
-      missing = true;
-      return;
-    }
+    if (!wedge) throw new NotFound('Wedge not found.');
 
     const nextStatus =
       body.status !== undefined
@@ -158,18 +155,14 @@ async function updateWedge(request: Request, id: string, wid: string): Promise<R
     });
   });
 
-  if (!updated || missing) return errorResponse('Wedge not found.', 404);
+  if (!updated) return errorResponse('Account not found.', 404);
   return aggregateResponse(updated);
 }
 
 async function removeWedge(request: Request, id: string, wid: string): Promise<Response> {
-  let missing = false;
   const updated = await mutateAggregate(id, expectedRevOf(request), (aggregate) => {
     const wedge = aggregate.wedges.find((w) => w.id === wid);
-    if (!wedge) {
-      missing = true;
-      return;
-    }
+    if (!wedge) throw new NotFound('Wedge not found.');
     aggregate.wedges = aggregate.wedges.filter((w) => w.id !== wid);
     for (const action of aggregate.actions) {
       if (action.wedgeId === wid) action.wedgeId = undefined;
@@ -179,7 +172,7 @@ async function removeWedge(request: Request, id: string, wid: string): Promise<R
     });
   });
 
-  if (!updated || missing) return errorResponse('Wedge not found.', 404);
+  if (!updated) return errorResponse('Account not found.', 404);
   return aggregateResponse(updated);
 }
 

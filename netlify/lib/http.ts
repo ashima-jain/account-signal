@@ -7,6 +7,7 @@
  */
 
 import type { AccountAggregate } from '../../src/domain/types';
+import { requireAccess } from './auth';
 
 const JSON_HEADERS = {
   'content-type': 'application/json; charset=utf-8',
@@ -88,6 +89,30 @@ export function optionalString(value: unknown, field: string): string | undefine
   return value.trim();
 }
 
+/**
+ * Stored links are rendered as anchors, so only schemes a browser can safely
+ * follow are accepted: `javascript:` in an href is script execution.
+ */
+export function optionalHttpUrl(value: unknown, field: string): string | undefined {
+  const raw = optionalString(value, field);
+  if (raw === undefined) return undefined;
+  const url = sanitizeHttpUrl(raw);
+  if (!url) throw new BadRequest(`"${field}" must be an http(s) URL.`);
+  return url;
+}
+
+/** Same rule for links the model hands us: drop them rather than reject the batch. */
+export function sanitizeHttpUrl(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return undefined;
+    return parsed.toString();
+  } catch {
+    return undefined;
+  }
+}
+
 export function stringArray(value: unknown, field: string): string[] {
   if (value === undefined || value === null) return [];
   if (!Array.isArray(value) || value.some((v) => typeof v !== 'string')) {
@@ -124,11 +149,12 @@ export function isoDate(value: unknown, field: string, fallback?: string): strin
 }
 
 /**
- * Wraps a handler so every thrown domain error becomes the right status code
- * and nothing leaks a stack trace to the client.
+ * Authorises the request, then wraps the handler so every thrown domain error
+ * becomes the right status code and nothing leaks a stack trace to the client.
  */
-export async function handle(fn: () => Promise<Response>): Promise<Response> {
+export async function handle(request: Request, fn: () => Promise<Response>): Promise<Response> {
   try {
+    requireAccess(request);
     return await fn();
   } catch (error) {
     const status = (error as { status?: number }).status;

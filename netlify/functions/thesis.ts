@@ -78,7 +78,7 @@ const THESIS_TOOL: Anthropic.Tool = {
   },
 };
 
-interface ThesisResult {
+export interface ThesisResult {
   whyItMatters: string;
   evidenceAssessments?: {
     index: number;
@@ -96,7 +96,7 @@ interface ThesisResult {
 }
 
 export default async (request: Request, context: Context): Promise<Response> =>
-  handle(async () => {
+  handle(request, async () => {
     if (request.method !== 'POST') {
       return errorResponse('Use POST to generate a thesis.', 405);
     }
@@ -141,7 +141,7 @@ function renderLedger(evidence: EvidenceItem[]): string {
     .join('\n\n');
 }
 
-function applyThesis(aggregate: AccountAggregate, result: ThesisResult): void {
+export function applyThesis(aggregate: AccountAggregate, result: ThesisResult): void {
   const now = new Date().toISOString();
   const today = now.slice(0, 10);
   const evidence = aggregate.evidence;
@@ -164,7 +164,9 @@ function applyThesis(aggregate: AccountAggregate, result: ThesisResult): void {
   // Claims the seller has curated by hand survive regeneration; only the
   // previously generated set is replaced. Superseded claims keep their history
   // through supersedesClaimId.
-  const previous = aggregate.claims;
+  const curated = aggregate.claims.filter((c) => !c.generated);
+  const previous = aggregate.claims.filter((c) => c.generated);
+  const replacedBy = new Map<string, string>();
   let downgraded = 0;
 
   const claims: Claim[] = (result.claims ?? []).map((proposed) => {
@@ -179,22 +181,38 @@ function applyThesis(aggregate: AccountAggregate, result: ThesisResult): void {
     if (status !== proposed.status) downgraded += 1;
 
     const supersedes = previous.find((c) => c.category === proposed.category);
+    const id = newId();
+    if (supersedes) replacedBy.set(supersedes.id, id);
 
     return {
-      id: newId(),
+      id,
       text: proposed.text,
       status,
       category: proposed.category,
       evidenceIds: status === 'UNKNOWN' ? [] : evidenceIds,
       supersedesClaimId: supersedes?.id,
+      generated: true,
       asOf: today,
       reviewedAt: now,
       createdAt: now,
     };
   });
 
-  aggregate.claims = claims;
+  aggregate.claims = [...curated, ...claims];
   aggregate.whyItMatters = result.whyItMatters;
+
+  // An action that was resolving a generated claim follows that claim to its
+  // replacement rather than pointing at nothing.
+  const live = new Set(aggregate.claims.map((c) => c.id));
+  for (const action of aggregate.actions) {
+    action.resolvesClaimIds = [
+      ...new Set(
+        action.resolvesClaimIds
+          .map((claimId) => replacedBy.get(claimId) ?? claimId)
+          .filter((claimId) => live.has(claimId))
+      ),
+    ];
+  }
 
   appendEvent(
     aggregate,

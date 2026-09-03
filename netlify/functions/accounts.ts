@@ -22,7 +22,7 @@ import {
 import { emptyAggregate, type Account } from '../../src/domain/types';
 
 export default async (request: Request, context: Context): Promise<Response> =>
-  handle(async () => {
+  handle(request, async () => {
     const id = context.params.id;
 
     if (!id) {

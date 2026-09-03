@@ -8,6 +8,7 @@
  */
 
 import type { AccountAggregate, AccountIndexEntry } from './domain/types';
+import { clearPasscode, getPasscode } from './auth';
 
 export class ApiError extends Error {
   readonly status: number;
@@ -32,10 +33,24 @@ async function request<T>(
   const headers = new Headers(rest.headers);
   if (rest.body) headers.set('content-type', 'application/json');
   if (rev !== undefined) headers.set('If-Match', `"rev-${rev}"`);
+  const passcode = getPasscode();
+  if (passcode) headers.set('Authorization', `Bearer ${passcode}`);
 
   const response = await fetch(path, { ...rest, headers });
   const text = await response.text();
-  const payload: unknown = text ? JSON.parse(text) : null;
+
+  // A gateway timeout answers with its own HTML or plain text, so parsing is
+  // never assumed to succeed.
+  let payload: unknown = null;
+  try {
+    payload = text ? JSON.parse(text) : null;
+  } catch {
+    payload = null;
+  }
+
+  // A rejected passcode is not an error the screens can do anything with: drop
+  // it so the app falls back to asking for one.
+  if (response.status === 401) clearPasscode();
 
   if (!response.ok) {
     const message =
@@ -43,6 +58,10 @@ async function request<T>(
         ? String((payload as { error: unknown }).error)
         : `Request failed with ${response.status}.`;
     throw new ApiError(message, response.status);
+  }
+
+  if (payload === null) {
+    throw new ApiError('The server returned an unreadable response.', response.status);
   }
 
   return payload as T;

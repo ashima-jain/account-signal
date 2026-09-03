@@ -2,7 +2,6 @@ import { Link, NavLink, Outlet, useParams } from 'react-router-dom';
 import { useAccountData } from '../useAccount';
 import { nextBestAction } from '../domain/nba';
 import { stageLabel } from '../domain/nba';
-import { api } from '../api';
 
 const TABS = [
   { to: '.', label: 'Thesis', end: true },
@@ -16,7 +15,7 @@ const TABS = [
 export default function AccountLayout() {
   const { id } = useParams();
   const store = useAccountData(id);
-  const { aggregate, loading, error, busy, run, clearError } = store;
+  const { aggregate, loading, error, busy, seed, clearError } = store;
 
   if (loading && !aggregate) {
     return (
@@ -54,13 +53,13 @@ export default function AccountLayout() {
         <div className="row">
           {busy ? <span className="dim">Saving…</span> : null}
           <button
-            disabled={busy || aggregate.evidence.length > 0}
+            disabled={busy || seeding || aggregate.evidence.length > 0}
             title={
               aggregate.evidence.length > 0
                 ? 'Seeding only runs on an empty account.'
                 : 'Research this company with Claude.'
             }
-            onClick={() => void run(() => api.seed(aggregate.account.id))}
+            onClick={() => void seed()}
           >
             Research
           </button>
@@ -81,6 +80,12 @@ export default function AccountLayout() {
       {seeding ? (
         <div className="banner warn">
           Research is still running. This page refreshes itself as findings land.
+        </div>
+      ) : null}
+
+      {aggregate.seedStatus === 'failed' ? (
+        <div className="banner error">
+          Research failed{aggregate.seedError ? `: ${aggregate.seedError}` : '.'} Try again.
         </div>
       ) : null}
 

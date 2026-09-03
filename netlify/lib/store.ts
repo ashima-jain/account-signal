@@ -114,6 +114,9 @@ export async function mutateAggregate(
     );
   }
 
+  // A mutator that throws — because the entity it was going to touch is not
+  // there — aborts before the write, so a 404 never burns a revision or
+  // rewrites the index.
   mutate(loaded.aggregate);
   return saveAggregate(loaded.aggregate, loaded.etag);
 }

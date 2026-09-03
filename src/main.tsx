@@ -10,6 +10,7 @@ import Stakeholders from './screens/Stakeholders';
 import Wedges from './screens/Wedges';
 import Actions from './screens/Actions';
 import ChangeLog from './screens/ChangeLog';
+import Gate from './screens/Gate';
 
 const router = createBrowserRouter([
   { path: '/', element: <CommandCenter /> },
@@ -29,6 +30,8 @@ const router = createBrowserRouter([
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <RouterProvider router={router} />
+    <Gate>
+      <RouterProvider router={router} />
+    </Gate>
   </StrictMode>
 );

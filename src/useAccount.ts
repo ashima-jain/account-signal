@@ -18,6 +18,8 @@ export interface AccountStore {
   error: string | null;
   clearError: () => void;
   reload: () => Promise<void>;
+  /** Starts research. Never fails loudly: the server records how it ended. */
+  seed: () => Promise<void>;
   /** Runs a mutation with the current rev and installs the returned aggregate. */
   run: (
     mutation: (rev: number) => Promise<AccountAggregate>
@@ -61,6 +63,23 @@ export function useAccountData(id: string | undefined): AccountStore {
     return () => clearInterval(timer);
   }, [aggregate?.seedStatus, reload]);
 
+  const seed = useCallback(async () => {
+    if (!id) return;
+    setBusy(true);
+    setError(null);
+    try {
+      install(await api.seed(id));
+    } catch (err) {
+      // Research outliving its invocation looks like a transport failure here,
+      // but the server has already recorded 'running' and will record how it
+      // ended. Reload and let the seed status speak.
+      if (err instanceof ApiError && err.status < 500) setError(messageOf(err));
+      await reload();
+    } finally {
+      setBusy(false);
+    }
+  }, [id, install, reload]);
+
   const run = useCallback(
     async (mutation: (rev: number) => Promise<AccountAggregate>) => {
       setBusy(true);
@@ -87,6 +106,7 @@ export function useAccountData(id: string | undefined): AccountStore {
     error,
     clearError: () => setError(null),
     reload,
+    seed,
     run,
   };
 }

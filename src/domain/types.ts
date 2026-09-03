@@ -245,6 +245,8 @@ export interface Claim {
   evidenceIds: ID[];
   /** Set when a newer claim replaces this one, so strategy history survives. */
   supersedesClaimId?: ID;
+  /** Written by research or thesis generation. Only these are replaced when the thesis is regenerated. */
+  generated?: boolean;
   asOf: string;
   reviewedAt?: string;
   createdAt: string;

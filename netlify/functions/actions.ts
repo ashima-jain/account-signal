@@ -8,6 +8,7 @@ import {
   isoDate,
   json,
   methodNotAllowed,
+  NotFound,
   oneOf,
   optionalString,
   readJson,
@@ -26,7 +27,7 @@ import {
 const ACTION_STATUSES: ActionStatus[] = ['open', 'done', 'dropped'];
 
 export default async (request: Request, context: Context): Promise<Response> =>
-  handle(async () => {
+  handle(request, async () => {
     const { id, aid } = context.params;
 
     if (request.method === 'GET') {
@@ -85,13 +86,9 @@ async function addAction(request: Request, id: string): Promise<Response> {
 async function updateAction(request: Request, id: string, aid: string): Promise<Response> {
   const body = await readJson<Record<string, unknown>>(request);
 
-  let missing = false;
   const updated = await mutateAggregate(id, expectedRevOf(request), (aggregate) => {
     const action = aggregate.actions.find((a) => a.id === aid);
-    if (!action) {
-      missing = true;
-      return;
-    }
+    if (!action) throw new NotFound('Action not found.');
 
     const previousStatus = action.status;
 
@@ -141,25 +138,21 @@ async function updateAction(request: Request, id: string, aid: string): Promise<
     );
   });
 
-  if (!updated || missing) return errorResponse('Action not found.', 404);
+  if (!updated) return errorResponse('Account not found.', 404);
   return aggregateResponse(updated);
 }
 
 async function removeAction(request: Request, id: string, aid: string): Promise<Response> {
-  let missing = false;
   const updated = await mutateAggregate(id, expectedRevOf(request), (aggregate) => {
     const action = aggregate.actions.find((a) => a.id === aid);
-    if (!action) {
-      missing = true;
-      return;
-    }
+    if (!action) throw new NotFound('Action not found.');
     aggregate.actions = aggregate.actions.filter((a) => a.id !== aid);
     appendEvent(aggregate, 'action_removed', `${action.objective} removed.`, {
       entityRef: `action:${aid}`,
     });
   });
 
-  if (!updated || missing) return errorResponse('Action not found.', 404);
+  if (!updated) return errorResponse('Account not found.', 404);
   return aggregateResponse(updated);
 }
 

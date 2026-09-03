@@ -8,6 +8,7 @@ import {
   isoDate,
   json,
   methodNotAllowed,
+  NotFound,
   oneOf,
   readJson,
   requireString,
@@ -22,7 +23,7 @@ import {
 } from '../../src/domain/types';
 
 export default async (request: Request, context: Context): Promise<Response> =>
-  handle(async () => {
+  handle(request, async () => {
     const { id, cid } = context.params;
 
     if (request.method === 'GET') {
@@ -79,13 +80,9 @@ async function addClaim(request: Request, id: string): Promise<Response> {
 async function updateClaim(request: Request, id: string, cid: string): Promise<Response> {
   const body = await readJson<Record<string, unknown>>(request);
 
-  let missing = false;
   const updated = await mutateAggregate(id, expectedRevOf(request), (aggregate) => {
     const claim = aggregate.claims.find((c) => c.id === cid);
-    if (!claim) {
-      missing = true;
-      return;
-    }
+    if (!claim) throw new NotFound('Claim not found.');
 
     const proposed: Claim = {
       ...claim,
@@ -124,25 +121,21 @@ async function updateClaim(request: Request, id: string, cid: string): Promise<R
     );
   });
 
-  if (!updated || missing) return errorResponse('Claim not found.', 404);
+  if (!updated) return errorResponse('Account not found.', 404);
   return aggregateResponse(updated);
 }
 
 async function removeClaim(request: Request, id: string, cid: string): Promise<Response> {
-  let missing = false;
   const updated = await mutateAggregate(id, expectedRevOf(request), (aggregate) => {
     const claim = aggregate.claims.find((c) => c.id === cid);
-    if (!claim) {
-      missing = true;
-      return;
-    }
+    if (!claim) throw new NotFound('Claim not found.');
     aggregate.claims = aggregate.claims.filter((c) => c.id !== cid);
     appendEvent(aggregate, 'claim_removed', `Removed "${claim.text}".`, {
       entityRef: `claim:${cid}`,
     });
   });
 
-  if (!updated || missing) return errorResponse('Claim not found.', 404);
+  if (!updated) return errorResponse('Account not found.', 404);
   return aggregateResponse(updated);
 }
 

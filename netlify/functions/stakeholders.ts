@@ -7,7 +7,9 @@ import {
   handle,
   json,
   methodNotAllowed,
+  NotFound,
   oneOf,
+  optionalHttpUrl,
   optionalString,
   readJson,
   requireString,
@@ -26,7 +28,7 @@ import {
 } from '../../src/domain/types';
 
 export default async (request: Request, context: Context): Promise<Response> =>
-  handle(async () => {
+  handle(request, async () => {
     const { id, sid } = context.params;
 
     if (request.method === 'GET') {
@@ -65,7 +67,7 @@ async function addStakeholder(request: Request, id: string): Promise<Response> {
     role: requireString(body.role, 'role'),
     businessUnit: optionalString(body.businessUnit, 'businessUnit'),
     emails: stringArray(body.emails, 'emails'),
-    linkedinUrl: optionalString(body.linkedinUrl, 'linkedinUrl'),
+    linkedinUrl: optionalHttpUrl(body.linkedinUrl, 'linkedinUrl'),
     mapRoles: buyerRoles(body.mapRoles),
     priorities: stringArray(body.priorities, 'priorities'),
     relevance: optionalString(body.relevance, 'relevance'),
@@ -102,13 +104,9 @@ async function addStakeholder(request: Request, id: string): Promise<Response> {
 async function updateStakeholder(request: Request, id: string, sid: string): Promise<Response> {
   const body = await readJson<Record<string, unknown>>(request);
 
-  let missing = false;
   const updated = await mutateAggregate(id, expectedRevOf(request), (aggregate) => {
     const person = aggregate.stakeholders.find((s) => s.id === sid);
-    if (!person) {
-      missing = true;
-      return;
-    }
+    if (!person) throw new NotFound('Stakeholder not found.');
 
     const previousPosture = person.posture;
     const previousTier = championTier(sid, aggregate.signals, aggregate.evidence);
@@ -120,7 +118,7 @@ async function updateStakeholder(request: Request, id: string, sid: string): Pro
     }
     if (body.emails !== undefined) person.emails = stringArray(body.emails, 'emails');
     if (body.linkedinUrl !== undefined) {
-      person.linkedinUrl = optionalString(body.linkedinUrl, 'linkedinUrl');
+      person.linkedinUrl = optionalHttpUrl(body.linkedinUrl, 'linkedinUrl');
     }
     if (body.mapRoles !== undefined) person.mapRoles = buyerRoles(body.mapRoles);
     if (body.priorities !== undefined) {
@@ -174,18 +172,14 @@ async function updateStakeholder(request: Request, id: string, sid: string): Pro
     }
   });
 
-  if (!updated || missing) return errorResponse('Stakeholder not found.', 404);
+  if (!updated) return errorResponse('Account not found.', 404);
   return aggregateResponse(updated);
 }
 
 async function removeStakeholder(request: Request, id: string, sid: string): Promise<Response> {
-  let missing = false;
   const updated = await mutateAggregate(id, expectedRevOf(request), (aggregate) => {
     const person = aggregate.stakeholders.find((s) => s.id === sid);
-    if (!person) {
-      missing = true;
-      return;
-    }
+    if (!person) throw new NotFound('Stakeholder not found.');
     aggregate.stakeholders = aggregate.stakeholders.filter((s) => s.id !== sid);
     aggregate.signals = aggregate.signals.filter((s) => s.stakeholderId !== sid);
     appendEvent(aggregate, 'stakeholder_removed', `${person.name} removed.`, {
@@ -193,7 +187,7 @@ async function removeStakeholder(request: Request, id: string, sid: string): Pro
     });
   });
 
-  if (!updated || missing) return errorResponse('Stakeholder not found.', 404);
+  if (!updated) return errorResponse('Account not found.', 404);
   return aggregateResponse(updated);
 }
 

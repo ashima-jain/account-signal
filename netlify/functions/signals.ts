@@ -7,6 +7,7 @@ import {
   InvariantViolation,
   json,
   methodNotAllowed,
+  NotFound,
   oneOf,
   optionalString,
   readJson,
@@ -22,7 +23,7 @@ import {
 } from '../../src/domain/types';
 
 export default async (request: Request, context: Context): Promise<Response> =>
-  handle(async () => {
+  handle(request, async () => {
     const { id, sigid } = context.params;
 
     if (request.method === 'GET') {
@@ -69,13 +70,9 @@ async function recordSignal(request: Request, id: string): Promise<Response> {
     note: optionalString(body.note, 'note'),
   };
 
-  let missing = false;
   const updated = await mutateAggregate(id, expectedRevOf(request), (aggregate) => {
     const person = aggregate.stakeholders.find((s) => s.id === signal.stakeholderId);
-    if (!person) {
-      missing = true;
-      return;
-    }
+    if (!person) throw new NotFound('Stakeholder not found.');
     assertCitation(signal, aggregate);
 
     const before = championTier(person.id, aggregate.signals, aggregate.evidence);
@@ -102,20 +99,15 @@ async function recordSignal(request: Request, id: string): Promise<Response> {
   });
 
   if (!updated) return errorResponse('Account not found.', 404);
-  if (missing) return errorResponse('Stakeholder not found.', 404);
   return aggregateResponse(updated, 201);
 }
 
 async function updateSignal(request: Request, id: string, sigid: string): Promise<Response> {
   const body = await readJson<Record<string, unknown>>(request);
 
-  let missing = false;
   const updated = await mutateAggregate(id, expectedRevOf(request), (aggregate) => {
     const signal = aggregate.signals.find((s) => s.id === sigid);
-    if (!signal) {
-      missing = true;
-      return;
-    }
+    if (!signal) throw new NotFound('Signal not found.');
 
     const before = championTier(signal.stakeholderId, aggregate.signals, aggregate.evidence);
 
@@ -152,18 +144,14 @@ async function updateSignal(request: Request, id: string, sigid: string): Promis
     }
   });
 
-  if (!updated || missing) return errorResponse('Signal not found.', 404);
+  if (!updated) return errorResponse('Account not found.', 404);
   return aggregateResponse(updated);
 }
 
 async function removeSignal(request: Request, id: string, sigid: string): Promise<Response> {
-  let missing = false;
   const updated = await mutateAggregate(id, expectedRevOf(request), (aggregate) => {
     const signal = aggregate.signals.find((s) => s.id === sigid);
-    if (!signal) {
-      missing = true;
-      return;
-    }
+    if (!signal) throw new NotFound('Signal not found.');
     aggregate.signals = aggregate.signals.filter((s) => s.id !== sigid);
     appendEvent(
       aggregate,
@@ -173,7 +161,7 @@ async function removeSignal(request: Request, id: string, sigid: string): Promis
     );
   });
 
-  if (!updated || missing) return errorResponse('Signal not found.', 404);
+  if (!updated) return errorResponse('Account not found.', 404);
   return aggregateResponse(updated);
 }
 

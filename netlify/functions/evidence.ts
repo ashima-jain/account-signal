@@ -8,7 +8,9 @@ import {
   isoDate,
   json,
   methodNotAllowed,
+  NotFound,
   oneOf,
+  optionalHttpUrl,
   optionalString,
   readJson,
   requireString,
@@ -26,7 +28,7 @@ import {
 } from '../../src/domain/types';
 
 export default async (request: Request, context: Context): Promise<Response> =>
-  handle(async () => {
+  handle(request, async () => {
     const { id, eid } = context.params;
 
     if (request.method === 'GET') {
@@ -50,7 +52,7 @@ async function addEvidence(request: Request, id: string): Promise<Response> {
     sourceType: oneOf(body.sourceType, SOURCE_TYPES, 'sourceType'),
     sourceSystem: oneOf(body.sourceSystem, SOURCE_SYSTEMS, 'sourceSystem', 'manual'),
     sourceRef: optionalString(body.sourceRef, 'sourceRef'),
-    externalUrl: optionalString(body.externalUrl, 'externalUrl'),
+    externalUrl: optionalHttpUrl(body.externalUrl, 'externalUrl'),
     externalId: optionalString(body.externalId, 'externalId'),
     verbatim: requireString(body.verbatim, 'verbatim'),
     capturedAt: now,
@@ -95,20 +97,16 @@ async function addEvidence(request: Request, id: string): Promise<Response> {
 async function updateEvidence(request: Request, id: string, eid: string): Promise<Response> {
   const body = await readJson<Record<string, unknown>>(request);
 
-  let missing = false;
   const updated = await mutateAggregate(id, expectedRevOf(request), (aggregate) => {
     const item = aggregate.evidence.find((e) => e.id === eid);
-    if (!item) {
-      missing = true;
-      return;
-    }
+    if (!item) throw new NotFound('Evidence not found.');
 
     const previousStatus = item.status;
 
     if (body.verbatim !== undefined) item.verbatim = requireString(body.verbatim, 'verbatim');
     if (body.sourceRef !== undefined) item.sourceRef = optionalString(body.sourceRef, 'sourceRef');
     if (body.externalUrl !== undefined) {
-      item.externalUrl = optionalString(body.externalUrl, 'externalUrl');
+      item.externalUrl = optionalHttpUrl(body.externalUrl, 'externalUrl');
     }
     if (body.asOf !== undefined) item.asOf = isoDate(body.asOf, 'asOf');
     if (body.confidential !== undefined) item.confidential = body.confidential === true;
@@ -138,18 +136,14 @@ async function updateEvidence(request: Request, id: string, eid: string): Promis
     }
   });
 
-  if (!updated || missing) return errorResponse('Evidence not found.', 404);
+  if (!updated) return errorResponse('Account not found.', 404);
   return aggregateResponse(updated);
 }
 
 async function removeEvidence(request: Request, id: string, eid: string): Promise<Response> {
-  let missing = false;
   const updated = await mutateAggregate(id, expectedRevOf(request), (aggregate) => {
     const item = aggregate.evidence.find((e) => e.id === eid);
-    if (!item) {
-      missing = true;
-      return;
-    }
+    if (!item) throw new NotFound('Evidence not found.');
 
     aggregate.evidence = aggregate.evidence.filter((e) => e.id !== eid);
     appendEvent(aggregate, 'evidence_removed', truncate(item.verbatim), {
@@ -171,7 +165,7 @@ async function removeEvidence(request: Request, id: string, eid: string): Promis
     }
   });
 
-  if (!updated || missing) return errorResponse('Evidence not found.', 404);
+  if (!updated) return errorResponse('Account not found.', 404);
   return aggregateResponse(updated);
 }
 

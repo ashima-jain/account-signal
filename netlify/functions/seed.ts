@@ -5,6 +5,7 @@ import {
   errorResponse,
   expectedRevOf,
   handle,
+  sanitizeHttpUrl,
 } from '../lib/http';
 import { appendEvent, mutateAggregate, newId, readAggregate } from '../lib/store';
 import { structuredCall } from '../lib/claude';
@@ -247,7 +248,7 @@ interface SeedResult {
 }
 
 export default async (request: Request, context: Context): Promise<Response> =>
-  handle(async () => {
+  handle(request, async () => {
     if (request.method !== 'POST') {
       return errorResponse('Use POST to seed an account.', 405);
     }
@@ -264,17 +265,41 @@ export default async (request: Request, context: Context): Promise<Response> =>
         409
       );
     }
+    if (loaded.aggregate.seedStatus === 'running') {
+      return errorResponse('Research is already running on this account.', 409);
+    }
 
     const { companyName, domain } = loaded.aggregate.account;
-    const result = await structuredCall<SeedResult>({
-      system: SYSTEM,
-      prompt: `Research ${companyName}${domain ? ` (${domain})` : ''} and fill in submit_seed. Search the web for their engineering organisation, technology stack, recent engineering blog posts, job postings, earnings commentary, incidents, and public statements from their engineering leadership. Today is ${new Date().toISOString().slice(0, 10)}.`,
-      tool: SEED_TOOL,
-      allowWebSearch: true,
-      maxTokens: 12000,
-    });
 
-    const updated = await mutateAggregate(id, expectedRevOf(request), (aggregate) => {
+    // Research routinely outlives the invocation that started it. Recording
+    // that it is running before calling Claude is what lets the client keep
+    // polling instead of staring at an empty account.
+    const running = await mutateAggregate(id, expectedRevOf(request), (aggregate) => {
+      aggregate.seedStatus = 'running';
+      aggregate.seedError = undefined;
+    });
+    if (!running) return errorResponse('Account not found.', 404);
+
+    let result: SeedResult;
+    try {
+      result = await structuredCall<SeedResult>({
+        system: SYSTEM,
+        prompt: `Research ${companyName}${domain ? ` (${domain})` : ''} and fill in submit_seed. Search the web for their engineering organisation, technology stack, recent engineering blog posts, job postings, earnings commentary, incidents, and public statements from their engineering leadership. Today is ${new Date().toISOString().slice(0, 10)}.`,
+        tool: SEED_TOOL,
+        allowWebSearch: true,
+        maxTokens: 12000,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Research failed.';
+      await mutateAggregate(id, undefined, (aggregate) => {
+        aggregate.seedStatus = 'failed';
+        aggregate.seedError = message;
+        appendEvent(aggregate, 'account_seeded', 'Research failed.', { reason: message });
+      });
+      throw error;
+    }
+
+    const updated = await mutateAggregate(id, running.rev, (aggregate) => {
       applySeed(aggregate, result);
     });
 
@@ -286,25 +311,28 @@ function applySeed(aggregate: AccountAggregate, result: SeedResult): void {
   const now = new Date().toISOString();
   const today = now.slice(0, 10);
 
-  const evidence: EvidenceItem[] = (result.evidence ?? []).map((item) => ({
-    id: newId(),
-    sourceType: SOURCE_TYPES.includes(item.sourceType) ? item.sourceType : 'inference',
-    sourceSystem: 'web_research',
-    sourceRef: item.sourceRef,
-    externalUrl: item.externalUrl,
-    verbatim: item.verbatim,
-    capturedAt: now,
-    asOf: safeDate(item.asOf, today),
-    confidential: false,
-    evidenceCategory: EVIDENCE_CATEGORIES.includes(item.category)
-      ? item.category
-      : undefined,
-    signalType: item.signalType,
-    whyItMatters: item.whyItMatters,
-    implicationForDevin: item.implicationForDevin,
-    nextDiscoveryQuestion: item.nextDiscoveryQuestion,
-    status: seedEvidenceStatus(item),
-  }));
+  const evidence: EvidenceItem[] = (result.evidence ?? []).map((item) => {
+    const externalUrl = sanitizeHttpUrl(item.externalUrl);
+    return {
+      id: newId(),
+      sourceType: SOURCE_TYPES.includes(item.sourceType) ? item.sourceType : 'inference',
+      sourceSystem: 'web_research',
+      sourceRef: item.sourceRef,
+      externalUrl,
+      verbatim: item.verbatim,
+      capturedAt: now,
+      asOf: safeDate(item.asOf, today),
+      confidential: false,
+      evidenceCategory: EVIDENCE_CATEGORIES.includes(item.category)
+        ? item.category
+        : undefined,
+      signalType: item.signalType,
+      whyItMatters: item.whyItMatters,
+      implicationForDevin: item.implicationForDevin,
+      nextDiscoveryQuestion: item.nextDiscoveryQuestion,
+      status: seedEvidenceStatus(item, externalUrl),
+    };
+  });
 
   const idOf = (ref: number): string | undefined => evidence[ref]?.id;
   const refsToIds = (refs: number[] | undefined): string[] =>
@@ -323,6 +351,7 @@ function applySeed(aggregate: AccountAggregate, result: SeedResult): void {
       status,
       category: claim.category,
       evidenceIds: status === 'UNKNOWN' ? [] : evidenceIds,
+      generated: true,
       asOf: today,
       createdAt: now,
     };
@@ -334,7 +363,7 @@ function applySeed(aggregate: AccountAggregate, result: SeedResult): void {
     role: person.role,
     businessUnit: person.businessUnit,
     emails: [],
-    linkedinUrl: person.linkedinUrl,
+    linkedinUrl: sanitizeHttpUrl(person.linkedinUrl),
     mapRoles: person.mapRoles ?? [],
     priorities: person.priorities ?? [],
     relevance: person.relevance,
@@ -371,6 +400,7 @@ function applySeed(aggregate: AccountAggregate, result: SeedResult): void {
   aggregate.wedges = wedges;
   aggregate.whyItMatters = result.whyItMatters;
   aggregate.seedStatus = 'complete';
+  aggregate.seedError = undefined;
 
   const demoted = (result.claims ?? []).filter(
     (c, i) => c.status === 'FACT' && claims[i]?.status !== 'FACT'
@@ -389,10 +419,10 @@ function applySeed(aggregate: AccountAggregate, result: SeedResult): void {
 }
 
 /** A web-researched FACT has to come with a link, or it is a hypothesis. */
-function seedEvidenceStatus(item: SeedEvidence): ClaimStatus {
+function seedEvidenceStatus(item: SeedEvidence, externalUrl: string | undefined): ClaimStatus {
   if (item.status !== 'FACT') return item.status ?? 'HYPOTHESIS';
   if (!isVerifiableSource(item.sourceType)) return 'HYPOTHESIS';
-  if (!item.externalUrl) return 'HYPOTHESIS';
+  if (!externalUrl) return 'HYPOTHESIS';
   return 'FACT';
 }
 
