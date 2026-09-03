@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { NotConfigured, Unauthorized, requireAccess } from './auth';
+import { Unauthorized, requireAccess } from './auth';
 
 const withPasscode = (value: string | undefined): void => {
   if (value === undefined) delete process.env.ACCESS_PASSCODE;
@@ -14,9 +14,9 @@ const requestWith = (authorization?: string): Request =>
 afterEach(() => withPasscode(undefined));
 
 describe('requireAccess', () => {
-  it('fails closed when the deploy has no passcode', () => {
+  it('lets everyone in when the deploy sets no passcode', () => {
     withPasscode(undefined);
-    expect(() => requireAccess(requestWith('Bearer anything'))).toThrow(NotConfigured);
+    expect(() => requireAccess(requestWith())).not.toThrow();
   });
 
   it('rejects a missing or wrong passcode', () => {

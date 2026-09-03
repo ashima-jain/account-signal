@@ -3,17 +3,35 @@ import { getPasscode, onPasscodeChange, setPasscode } from '../auth';
 import { Field } from '../components/ui';
 
 /**
- * Account intelligence is not public, so nothing renders until the workspace
- * passcode is present. The server is the authority: this only decides whether
- * to ask, and it asks again as soon as the server rejects what it has.
+ * The server is the authority on whether this deploy is private: a deploy with
+ * no ACCESS_PASSCODE set answers unauthenticated requests, so the gate asks for
+ * a passcode only once the API has actually refused one. It asks again as soon
+ * as the server rejects what it has.
  */
 export default function Gate({ children }: { children: ReactNode }) {
   const [unlocked, setUnlocked] = useState(() => Boolean(getPasscode()));
+  const [open, setOpen] = useState<boolean | null>(null);
   const [entry, setEntry] = useState('');
 
   useEffect(() => onPasscodeChange(() => setUnlocked(Boolean(getPasscode()))), []);
 
-  if (unlocked) return <>{children}</>;
+  useEffect(() => {
+    if (unlocked) return;
+    let live = true;
+    void fetch('/api/accounts')
+      .then((response) => {
+        if (live) setOpen(response.status !== 401);
+      })
+      .catch(() => {
+        if (live) setOpen(false);
+      });
+    return () => {
+      live = false;
+    };
+  }, [unlocked]);
+
+  if (unlocked || open) return <>{children}</>;
+  if (open === null) return null;
 
   return (
     <div className="shell">

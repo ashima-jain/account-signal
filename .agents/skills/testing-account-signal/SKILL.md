@@ -11,7 +11,7 @@ description: How to run and end-to-end test the Account Signal SPA (Vite + React
 export PATH=$HOME/.nvm/versions/node/v22.12.0/bin:$PATH   # Node 22 is required
 cd /path/to/account-signal
 npm install
-cp -n .env.example .env        # set ANTHROPIC_API_KEY and ACCESS_PASSCODE (never print/commit them)
+cp -n .env.example .env        # set ANTHROPIC_API_KEY (never print/commit it)
 npx netlify dev                # UI + /api functions + local blobs on http://localhost:8888
 ```
 
@@ -20,11 +20,12 @@ Always test through `netlify dev` on :8888. Tail the dev-server output to a file
 (`npx netlify dev > /tmp/netlifydev.log 2>&1 &`) and grep it for
 `Response with status 5` / `status 409` while testing — that is the cheapest 500/stale-revision detector.
 
-## Getting in: the passcode gate
+## Getting in: the optional passcode gate
 
-Every `/api/*` route requires `Authorization: Bearer $ACCESS_PASSCODE` and the API fails closed (503)
-when the variable is unset. The UI shows a passcode gate on first load and stores the value in
-`localStorage` under `account-signal.passcode`, clearing it on any 401.
+With `ACCESS_PASSCODE` set, every `/api/*` route requires `Authorization: Bearer $ACCESS_PASSCODE`,
+and the UI shows a passcode gate on first load, storing the value in `localStorage` under
+`account-signal.passcode` and clearing it on any 401. With the variable unset the API is open and
+the gate does not appear.
 
 ## Research is a background function
 

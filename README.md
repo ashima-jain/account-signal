@@ -91,16 +91,16 @@ Requires Node 22+.
 
 ```bash
 npm install
-cp .env.example .env      # add ANTHROPIC_API_KEY and ACCESS_PASSCODE
+cp .env.example .env      # add ANTHROPIC_API_KEY
 npx netlify dev           # app + functions + local blobs on :8888
 ```
 
 `npm run dev` alone serves the UI only; the API needs the Netlify dev server. Without an
 `ANTHROPIC_API_KEY` everything works except research and thesis generation, which return 503.
 
-Every API route requires `Authorization: Bearer $ACCESS_PASSCODE`; the UI asks for the passcode
-once and keeps it. If `ACCESS_PASSCODE` is unset the API fails closed and answers 503, so a
-misconfigured deploy never exposes account data.
+Access control is opt-in. Set `ACCESS_PASSCODE` and every API route then requires
+`Authorization: Bearer $ACCESS_PASSCODE` and the UI asks for the passcode once and keeps it;
+leave it unset and the deploy is open to anyone with the URL.
 
 ```bash
 npm test        # vitest, domain rules
@@ -110,6 +110,7 @@ npm run build   # tsc -b && vite build
 
 ## Deploying
 
-Netlify, with `ANTHROPIC_API_KEY` and `ACCESS_PASSCODE` set as site environment variables. Blobs need no configuration.
+Netlify, with `ANTHROPIC_API_KEY` (and optionally `ACCESS_PASSCODE`) set as site environment
+variables. Blobs need no configuration.
 Research can outrun a function invocation; a timeout is not a failure — the account page polls until
 the findings land.

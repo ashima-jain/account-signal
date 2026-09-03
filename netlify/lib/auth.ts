@@ -5,8 +5,8 @@
  * public. A single shared workspace passcode is the whole scheme: this is an
  * internal tool used by one team, and a passcode the deployer sets is both
  * enough to keep the blob store off the open internet and small enough that it
- * cannot be got subtly wrong. If no passcode is configured the API refuses to
- * serve anything, so a misconfigured deploy fails closed rather than open.
+ * cannot be got subtly wrong. Leaving ACCESS_PASSCODE unset is a deliberate
+ * choice to run the deploy open, so the gate simply steps aside.
  */
 
 export class Unauthorized extends Error {
@@ -17,17 +17,9 @@ export class Unauthorized extends Error {
   }
 }
 
-export class NotConfigured extends Error {
-  readonly status = 503;
-  constructor() {
-    super('ACCESS_PASSCODE is not set on this deploy, so the API is closed.');
-    this.name = 'NotConfigured';
-  }
-}
-
 export function requireAccess(request: Request): void {
   const expected = process.env.ACCESS_PASSCODE;
-  if (!expected) throw new NotConfigured();
+  if (!expected) return;
 
   const header = request.headers.get('authorization') ?? '';
   const presented = header.startsWith('Bearer ') ? header.slice(7) : '';
